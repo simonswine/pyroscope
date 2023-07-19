@@ -14,6 +14,7 @@ import (
 	"github.com/google/pprof/profile"
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/ring/client"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -224,21 +225,29 @@ func Test_SelectMergeStacktraces(t *testing.T) {
 			},
 		},
 	})
+	bidi4 := newFakeBidiClientStacktraces([]*ingestv1.ProfileSets{
+		{},
+	})
+	bidi4.recvErr = errors.New("I am feeling bad")
+
 	querier, err := New(Config{
 		PoolConfig: clientpool.PoolConfig{ClientCleanupPeriod: 1 * time.Millisecond},
 	}, testhelper.NewMockRing([]ring.InstanceDesc{
 		{Addr: "1"},
 		{Addr: "2"},
 		{Addr: "3"},
+		{Addr: "4"},
 	}, 3), func(addr string) (client.PoolClient, error) {
 		q := newFakeQuerier()
 		switch addr {
 		case "1":
 			q.On("MergeProfilesStacktraces", mock.Anything).Once().Return(bidi1)
 		case "2":
-			q.On("MergeProfilesStacktraces", mock.Anything).Once().Return(bidi2)
+			q.On("MergeProfilesStacktraces", mock.Anything).Once().Return(bidi4)
 		case "3":
 			q.On("MergeProfilesStacktraces", mock.Anything).Once().Return(bidi3)
+		case "4":
+			q.On("MergeProfilesStacktraces", mock.Anything).Once().Return(bidi2)
 		}
 		return q, nil
 	}, nil, nil, log.NewLogfmtLogger(os.Stdout))
@@ -569,6 +578,9 @@ type fakeBidiClientStacktraces struct {
 	batches  []*ingestv1.ProfileSets
 	kept     []testProfile
 	cur      *ingestv1.ProfileSets
+
+	sendErr error
+	recvErr error
 }
 
 func newFakeBidiClientStacktraces(batches []*ingestv1.ProfileSets) *fakeBidiClientStacktraces {
@@ -582,6 +594,9 @@ func newFakeBidiClientStacktraces(batches []*ingestv1.ProfileSets) *fakeBidiClie
 }
 
 func (f *fakeBidiClientStacktraces) Send(in *ingestv1.MergeProfilesStacktracesRequest) error {
+	if f.sendErr != nil {
+		return f.sendErr
+	}
 	if in.Request != nil {
 		return nil
 	}
@@ -603,6 +618,9 @@ func (f *fakeBidiClientStacktraces) Send(in *ingestv1.MergeProfilesStacktracesRe
 }
 
 func (f *fakeBidiClientStacktraces) Receive() (*ingestv1.MergeProfilesStacktracesResponse, error) {
+	if f.recvErr != nil {
+		return nil, f.recvErr
+	}
 	profiles := <-f.profiles
 	if profiles == nil {
 		return &ingestv1.MergeProfilesStacktracesResponse{
