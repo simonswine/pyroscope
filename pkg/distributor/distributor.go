@@ -3,6 +3,7 @@ package distributor
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"expvar"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/bufbuild/connect-go"
 	"github.com/dustin/go-humanize"
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/google/uuid"
 	"github.com/grafana/dskit/kv"
 	"github.com/grafana/dskit/limiter"
@@ -178,10 +180,38 @@ func (d *Distributor) stopping(_ error) error {
 	return services.StopManagerAndAwaitStopped(context.Background(), d.subservices)
 }
 
+const (
+	gzipID1     = 0x1f
+	gzipID2     = 0x8b
+	gzipDeflate = 8
+)
+
+func getDecompressedSize(buf []byte) (uint32, error) {
+	if buf[0] != gzipID1 || buf[1] != gzipID2 || buf[2] != gzipDeflate {
+		return 0, errors.New("no gzip headers found")
+	}
+
+	l := len(buf)
+	// Warning: At the 32bit limit gzip uses modulo 2^32, so the acutal uncompressed size might be higher.
+	return binary.LittleEndian.Uint32(buf[l-4 : l]), nil
+}
+
 func (d *Distributor) Push(ctx context.Context, grpcReq *connect.Request[pushv1.PushRequest]) (*connect.Response[pushv1.PushResponse], error) {
+	// TODO: Check size of grpcReq.Msg.Series
+	for _, s := range grpcReq.Msg.Series {
+		for _, samp := range s.Samples {
+			if s, err := getDecompressedSize(samp.RawProfile); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			} else {
+				level.Info(d.logger).Log("msg", "decompressed size BEFORE", "size", humanize.Bytes(uint64(s)))
+			}
+		}
+	}
+
 	req := &distributormodel.PushRequest{
 		Series: make([]*distributormodel.ProfileSeries, 0, len(grpcReq.Msg.Series)),
 	}
+
 	for _, grpcSeries := range grpcReq.Msg.Series {
 		series := &distributormodel.ProfileSeries{
 			Labels:  grpcSeries.Labels,
@@ -259,6 +289,7 @@ func (d *Distributor) PushParsed(ctx context.Context, req *distributormodel.Push
 			} else {
 				decompressedSize = p.SizeVT()
 			}
+			level.Info(d.logger).Log("msg", "decompressed size AFTER", "size", humanize.Bytes(uint64(decompressedSize)))
 			d.metrics.receivedDecompressedBytes.WithLabelValues(profName, tenantID).Observe(float64(decompressedSize))
 			d.metrics.receivedSamples.WithLabelValues(profName, tenantID).Observe(float64(len(p.Sample)))
 			totalPushUncompressedBytes += int64(decompressedSize)
