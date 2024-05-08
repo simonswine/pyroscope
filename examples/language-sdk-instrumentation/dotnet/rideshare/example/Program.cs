@@ -10,7 +10,9 @@ using Microsoft.Extensions.DependencyInjection;
 
 using OpenTelemetry.Trace;
 
+using Grafana.OpenTelemetry;
 using Pyroscope.OpenTelemetry;
+
 
 namespace Example;
 
@@ -41,6 +43,7 @@ public static class Program
                 .AddSource(CustomActivitySourceName)
                 .AddConsoleExporter()
                 .AddOtlpExporter()
+                .UseGrafana()
                 .AddProcessor(new PyroscopeSpanProcessor());
             });
         var app = builder.Build();
