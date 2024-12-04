@@ -4,20 +4,24 @@ services:
     build:
       context: .
       dockerfile: java.Dockerfile
+  java17-ubi9:
+    build:
+      context: .
+      dockerfile: java17-ubi9.Dockerfile
   pyroscope:
     image: grafana/pyroscope:latest
     ports:
     - 4040:4040
-  agent:
-    image: grafana/agent:main
+  alloy:
+    image: grafana/alloy:latest
     volumes:
-    - ./config.river:/etc/agent-config/config.river
+    - ./config.alloy:/etc/alloy-config/config.alloy
     command:
     - run
-    - /etc/agent-config/config.river
+    - /etc/alloy-config/config.alloy
     - --server.http.listen-addr=0.0.0.0:12345
     environment:
-      HOSTNAME: agent
+      HOSTNAME: alloy
       AGENT_MODE: flow
     ports:
     - 12345:12345
