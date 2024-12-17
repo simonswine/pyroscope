@@ -63,10 +63,11 @@ services:
       - run
       - /etc/alloy/config.alloy
       - --stability.level=public-preview
-    volumes:
-      - ./config.alloy:/etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
     ports:
-      - "9999:9999"
+      - 12345:12345
+    privileged: true
+    pid: host
 
   pyroscope:
     image: grafana/pyroscope:latest
@@ -77,8 +78,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.load-generator
-    environment:
-    - PYROSCOPE_SERVER_ADDRESS=http://alloy:9999
 
   grafana:
     image: grafana/grafana:latest
