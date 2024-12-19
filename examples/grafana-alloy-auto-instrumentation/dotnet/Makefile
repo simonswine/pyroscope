@@ -2,11 +2,13 @@
 
 build: attach-profiler libprofilers.so
 
+# https://github.com/simonswine/dotnetdiag/pull/new/20241219_add-attach-profiler
 .PHONY: attach-profiler
 attach-profiler:
 	cd ~/git/github.com/pyroscope-io/dotnetdiag/examples/attach-profiler && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(CURDIR)/attach-profiler
 
 
+# https://github.com/simonswine/dr-dotnet/tree/20241219_include-in-alloy
 .PHONY: libprofilers.so
 libprofilers.so:
 	$(eval CONTAINER_ID :=$(shell docker build --platform linux/amd64 -t libprofilers ~/git/github.com/dr-dotnet/dr-dotnet/src/DrDotnet.Profilers && docker create libprofilers))
