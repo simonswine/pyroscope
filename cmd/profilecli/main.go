@@ -77,7 +77,7 @@ func main() {
 
 	// Add flamegraph command
 	flamegraphCmd := queryCmd.Command("flamegraph", "Visualize profile as a flamegraph in terminal UI.")
-	flamegraphParams := addQueryProfileParams(flamegraphCmd)
+	flamegraphParams := addFlamegraphParams(flamegraphCmd)
 
 	queryGoPGOCmd := queryCmd.Command("go-pgo", "Request profile for Go PGO.")
 	queryGoPGOOutput := queryGoPGOCmd.Flag("output", "How to output the result, examples: console, raw, pprof=./my.pprof").Default("pprof=./default.pgo").String()
