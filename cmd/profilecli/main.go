@@ -74,6 +74,11 @@ func main() {
 	queryProfileCmd := queryCmd.Command("profile", "Request merged profile.").Alias("merge")
 	queryProfileOutput := queryProfileCmd.Flag("output", "How to output the result, examples: console, raw, pprof=./my.pprof").Default("console").String()
 	queryProfileParams := addQueryProfileParams(queryProfileCmd)
+
+	// Add flamegraph command
+	flamegraphCmd := queryCmd.Command("flamegraph", "Visualize profile as a flamegraph in terminal UI.")
+	flamegraphParams := addQueryProfileParams(flamegraphCmd)
+
 	queryGoPGOCmd := queryCmd.Command("go-pgo", "Request profile for Go PGO.")
 	queryGoPGOOutput := queryGoPGOCmd.Flag("output", "How to output the result, examples: console, raw, pprof=./my.pprof").Default("pprof=./default.pgo").String()
 	queryGoPGOParams := addQueryGoPGOParams(queryGoPGOCmd)
@@ -127,6 +132,10 @@ func main() {
 		}
 	case queryProfileCmd.FullCommand():
 		if err := queryProfile(ctx, queryProfileParams, *queryProfileOutput); err != nil {
+			os.Exit(checkError(err))
+		}
+	case flamegraphCmd.FullCommand():
+		if err := showTerminalFlamegraph(ctx, flamegraphParams); err != nil {
 			os.Exit(checkError(err))
 		}
 	case queryGoPGOCmd.FullCommand():
