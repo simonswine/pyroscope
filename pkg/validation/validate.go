@@ -108,24 +108,24 @@ type LabelValidationLimits interface {
 }
 
 // ValidateLabels validates the labels of a profile.
-func ValidateLabels(limits LabelValidationLimits, tenantID string, ls []*typesv1.LabelPair) error {
+func ValidateLabels(limits LabelValidationLimits, tenantID string, ls []*typesv1.LabelPair) ([]*typesv1.LabelPair, error) {
 	if len(ls) == 0 {
-		return NewErrorf(MissingLabels, MissingLabelsErrorMsg)
+		return nil, NewErrorf(MissingLabels, MissingLabelsErrorMsg)
 	}
 
 	sort.Sort(phlaremodel.Labels(ls))
 	numLabelNames := len(ls)
 	maxLabels := limits.MaxLabelNamesPerSeries(tenantID)
 	if numLabelNames > maxLabels {
-		return NewErrorf(MaxLabelNamesPerSeries, MaxLabelNamesPerSeriesErrorMsg, phlaremodel.LabelPairsString(ls), numLabelNames, maxLabels)
+		return nil, NewErrorf(MaxLabelNamesPerSeries, MaxLabelNamesPerSeriesErrorMsg, phlaremodel.LabelPairsString(ls), numLabelNames, maxLabels)
 	}
 	metricNameValue := phlaremodel.Labels(ls).Get(model.MetricNameLabel)
 	if !model.IsValidMetricName(model.LabelValue(metricNameValue)) {
-		return NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid metric name")
+		return nil, NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid metric name")
 	}
 	serviceNameValue := phlaremodel.Labels(ls).Get(phlaremodel.LabelNameServiceName)
 	if !isValidServiceName(serviceNameValue) {
-		return NewErrorf(MissingLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "service name is not provided")
+		return nil, NewErrorf(MissingLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "service name is not provided")
 	}
 	lastLabelName := ""
 
@@ -133,14 +133,14 @@ func ValidateLabels(limits LabelValidationLimits, tenantID string, ls []*typesv1
 		l := ls[i]
 
 		if len(l.Name) > limits.MaxLabelNameLength(tenantID) {
-			return NewErrorf(LabelNameTooLong, LabelNameTooLongErrorMsg, phlaremodel.LabelPairsString(ls), l.Name)
+			return nil, NewErrorf(LabelNameTooLong, LabelNameTooLongErrorMsg, phlaremodel.LabelPairsString(ls), l.Name)
 		}
 		if len(l.Value) > limits.MaxLabelValueLength(tenantID) {
-			return NewErrorf(LabelValueTooLong, LabelValueTooLongErrorMsg, phlaremodel.LabelPairsString(ls), l.Value)
+			return nil, NewErrorf(LabelValueTooLong, LabelValueTooLongErrorMsg, phlaremodel.LabelPairsString(ls), l.Value)
 		}
 		origName, sanitized, ok := SanitizeLabelName(l.Name)
 		if !ok {
-			return NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid label name '"+origName+"'")
+			return nil, NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid label name '"+origName+"'")
 		}
 
 		// Check if a dup would be created because of sanitization
@@ -163,15 +163,15 @@ func ValidateLabels(limits LabelValidationLimits, tenantID string, ls []*typesv1
 		i++
 
 		if !model.LabelValue(l.Value).IsValid() {
-			return NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid label value '"+l.Value+"'")
+			return nil, NewErrorf(InvalidLabels, InvalidLabelsErrorMsg, phlaremodel.LabelPairsString(ls), "invalid label value '"+l.Value+"'")
 		}
 		if cmp := strings.Compare(lastLabelName, sanitized); cmp == 0 {
-			return NewErrorf(DuplicateLabelNames, DuplicateLabelNamesErrorMsg, phlaremodel.LabelPairsString(ls), origName)
+			return nil, NewErrorf(DuplicateLabelNames, DuplicateLabelNamesErrorMsg, phlaremodel.LabelPairsString(ls), origName)
 		}
 		lastLabelName = sanitized
 	}
 
-	return nil
+	return ls, nil
 }
 
 // SanitizeLabelName reports whether the label name is valid,

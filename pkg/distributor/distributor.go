@@ -512,7 +512,8 @@ func (d *Distributor) sendRequestsToIngester(ctx context.Context, req *distribut
 
 		groups := usageGroups.GetUsageGroups(req.TenantID, series.Labels)
 
-		if err = validation.ValidateLabels(d.limits, req.TenantID, series.Labels); err != nil {
+		series.Labels, err = validation.ValidateLabels(d.limits, req.TenantID, series.Labels)
+		if err != nil {
 			validation.DiscardedProfiles.WithLabelValues(string(validation.ReasonOf(err)), req.TenantID).Add(float64(req.TotalProfiles))
 			validation.DiscardedBytes.WithLabelValues(string(validation.ReasonOf(err)), req.TenantID).Add(float64(req.TotalBytesUncompressed))
 			groups.CountDiscardedBytes(string(validation.ReasonOf(err)), req.TotalBytesUncompressed)
