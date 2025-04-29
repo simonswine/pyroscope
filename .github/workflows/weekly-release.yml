@@ -66,6 +66,7 @@ jobs:
           # the grep needs to remove an extra v, which is in the git tag, but not in the image tag
           for image in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep "grafana/pyroscope:${GORELEASER_CURRENT_TAG:1}-"); do
             new_image="${image/0.0.0-/}"
+            new_image="${new_image/grafana/simonswine}"
             docker tag "${image}" "${new_image}"
             docker push "${new_image}"
             IMAGE_AMMENDS+=( "--amend" "${new_image}" )
