@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Collections;
+using System.Runtime;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
@@ -26,6 +27,36 @@ public static class Program
         }
         object globalLock = new();
         var strings = new List<string>();
+
+        // Background thread: log whenever a GC collection occurs per generation
+        var gcThread = new Thread(() =>
+        {
+            int[] counts = new int[GC.MaxGeneration + 1];
+            for (int g = 0; g <= GC.MaxGeneration; g++)
+                counts[g] = GC.CollectionCount(g);
+
+            while (true)
+            {
+                Thread.Sleep(100);
+                for (int g = 0; g <= GC.MaxGeneration; g++)
+                {
+                    int current = GC.CollectionCount(g);
+                    if (current != counts[g])
+                    {
+                        long heapBytes = GC.GetTotalMemory(forceFullCollection: false);
+                        Console.WriteLine(
+                            $"[GC] Gen{g} collection #{current}  heap={heapBytes / 1024 / 1024} MB  " +
+                            $"time={DateTime.UtcNow:HH:mm:ss.fff}");
+                        counts[g] = current;
+                    }
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "GCMonitor",
+        };
+        gcThread.Start();
 
         var orderService = new OrderService();
         var bikeService = new BikeService(orderService);
