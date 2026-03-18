@@ -1,9 +1,31 @@
 using System;
+using System.Collections.Generic;
 
 namespace Example;
 
 internal class OrderService
 {
+    // Simulates a growing route cache — accumulates over time to produce
+    // a realistic heap allocation profile visible in memory profiling.
+    private static readonly List<byte[]> RouteCache = new();
+    private static readonly object CacheLock = new();
+
+    private static void CacheRouteData(string vehicle, long searchRadius)
+    {
+        // Allocate ~64 KB of route coordinate data per search
+        var routeData = new byte[64 * 1024];
+        var rng = new Random();
+        rng.NextBytes(routeData);
+
+        lock (CacheLock)
+        {
+            RouteCache.Add(routeData);
+            // Keep at most 2000 entries (~128 MB) to avoid OOM in demo
+            if (RouteCache.Count > 2000)
+                RouteCache.RemoveAt(0);
+        }
+    }
+
     public void FindNearestVehicle(long searchRadius, string vehicle)
     {
         lock (_lock)
@@ -13,6 +35,9 @@ internal class OrderService
                 .Build();
             Pyroscope.LabelsWrapper.Do(labels, () =>
             {
+                // Allocate per-request route computation buffers
+                CacheRouteData(vehicle, searchRadius);
+
                 for (long i = 0; i < searchRadius * 1000000000; i++)
                 {
                 }
