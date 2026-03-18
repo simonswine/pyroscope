@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 using OpenTelemetry.Trace;
 
+using Prometheus;
 using Pyroscope.OpenTelemetry;
 
 namespace Example;
@@ -75,6 +76,9 @@ public static class Program
                 .AddProcessor(new PyroscopeSpanProcessor());
             });
         var app = builder.Build();
+
+        app.UseHttpMetrics();
+        app.MapMetrics();
 
         app.MapGet("/bike", () =>
         {
