@@ -8,6 +8,19 @@ processors:
       - action: upsert
         key: k8s.cluster.name
         value: demo
+  # This is abusing the k8s_attributes processor for getting access to kubernetes metadata
+  k8s_attributes/docker-shim:
+    auth_type: kubeConfig
+    extract:
+      metadata:
+        - container.id
+        - container.image.name
+        - container.image.tag
+    # Associate by container ID for multi-container pods
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: container.id
 
 exporters:
   otlp_grpc:
@@ -16,9 +29,13 @@ exporters:
       insecure: true
 
 service:
+  telemetry:
+    logs:
+      level: debug
   pipelines:
     profiles:
       receivers: [profiling]
       exporters: [otlp_grpc]
       processors:
+        - k8s_attributes/docker-shim
         - resource/metadata
