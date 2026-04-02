@@ -6,7 +6,7 @@ ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG SDK_VERSION
 
-WORKDIR /dotnet
+WORKDIR /dotnet/src
 
 ADD example/BikeService.cs \
     example/CarService.cs \
@@ -18,11 +18,13 @@ ADD example/BikeService.cs \
 # Set the target framework to SDK_VERSION
 RUN sed -i -E 's|<TargetFramework>.*</TargetFramework>|<TargetFramework>net'$SDK_VERSION'</TargetFramework>|' Example.csproj
 
-# We hardcode linux-x64 here, as the profiler doesn't support any other platform
-RUN dotnet publish -o . --framework net$SDK_VERSION --runtime linux-musl-x64 --no-self-contained
+# We hardcode linux-x64 here, as the profiler doesn't support any other platform.
+# Publish to a separate directory: .NET 10+ cleans the output dir before compiling,
+# so -o . (same as source dir) would delete source files and cause CS5001.
+RUN dotnet publish -o /dotnet/publish --framework net$SDK_VERSION --runtime linux-musl-x64 --no-self-contained
 
 # This fetches the SDK
-FROM --platform=linux/amd64 pyroscope/pyroscope-dotnet:0.13.0-musl AS sdk
+FROM --platform=linux/amd64 pyroscope/pyroscope-dotnet:0.14.3-musl AS sdk
 
 # Runtime only image of the targetplatfrom, so the platform the image will be running on.
 FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/aspnet:$SDK_VERSION-alpine
@@ -31,7 +33,7 @@ WORKDIR /dotnet
 
 COPY --from=sdk /Pyroscope.Profiler.Native.so ./Pyroscope.Profiler.Native.so
 COPY --from=sdk /Pyroscope.Linux.ApiWrapper.x64.so ./Pyroscope.Linux.ApiWrapper.x64.so
-COPY --from=build /dotnet/ ./
+COPY --from=build /dotnet/publish/ ./
 
 
 ENV CORECLR_ENABLE_PROFILING=1

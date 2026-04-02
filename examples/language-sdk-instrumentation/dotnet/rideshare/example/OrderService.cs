@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Example;
 
@@ -17,6 +18,8 @@ internal class OrderService
                 {
                 }
 
+                AllocateMemory(searchRadius * 1000);
+
                 if (vehicle.Equals("car"))
                 {
                     CheckDriverAvailability(labels, searchRadius);
@@ -26,6 +29,18 @@ internal class OrderService
     }
 
     private readonly object _lock = new();
+
+    private static void AllocateMemory(long count)
+    {
+        var buffers = new List<byte[]>((int)count);
+        for (long i = 0; i < count; i++)
+        {
+            var buf = new byte[1024];
+            buf[0] = (byte)(i & 0xFF); // prevent dead-code elimination
+            buffers.Add(buf);
+        }
+        GC.KeepAlive(buffers);
+    }
 
     private static void CheckDriverAvailability(Pyroscope.LabelSet ctx, long searchRadius)
     {
@@ -39,7 +54,8 @@ internal class OrderService
             {
             }
 
-            var now = DateTime.Now.Minute % 2 == 0;
+            AllocateMemory(searchRadius * 2000);
+
             var forceMutexLock = DateTime.Now.Minute % 2 == 0;
             if ("eu-north".Equals(region) && forceMutexLock)
             {

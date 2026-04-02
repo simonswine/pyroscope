@@ -1,12 +1,14 @@
 ARG SDK_VERSION=8.0
+ARG SDK_IMAGE_TAG=8.0-bookworm-slim
+ARG RUNTIME_IMAGE_TAG=8.0-noble-chiseled-extra
 # The build images takes an SDK image of the buildplatform, so the platform the build is running on.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:$SDK_VERSION-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:$SDK_IMAGE_TAG AS build
 
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG SDK_VERSION
 
-WORKDIR /dotnet
+WORKDIR /dotnet/src
 
 ADD example/BikeService.cs \
     example/CarService.cs \
@@ -18,14 +20,16 @@ ADD example/BikeService.cs \
 # Set the target framework to SDK_VERSION
 RUN sed -i -E 's|<TargetFramework>.*</TargetFramework>|<TargetFramework>net'$SDK_VERSION'</TargetFramework>|' Example.csproj
 
-# We hardcode linux-x64 here, as the profiler doesn't support any other platform
-RUN dotnet publish -o . --framework net$SDK_VERSION --runtime linux-x64 --no-self-contained
+# We hardcode linux-x64 here, as the profiler doesn't support any other platform.
+# Publish to a separate directory: .NET 10+ cleans the output dir before compiling,
+# so -o . (same as source dir) would delete source files and cause CS5001.
+RUN dotnet publish -o /dotnet/publish --framework net$SDK_VERSION --runtime linux-x64 --no-self-contained
 
 # This fetches the SDK
-FROM --platform=linux/amd64 pyroscope/pyroscope-dotnet:0.13.0-glibc AS sdk
+FROM --platform=linux/amd64 pyroscope/pyroscope-dotnet:0.14.3-glibc AS sdk
 
 # Runtime only image of the targetplatfrom, so the platform the image will be running on.
-FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/aspnet:$SDK_VERSION-noble-chiseled-extra
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/aspnet:$RUNTIME_IMAGE_TAG
 
 WORKDIR /dotnet
 
@@ -34,7 +38,7 @@ COPY --from=build /etc/ssl/certs /etc/ssl/certs
 
 COPY --from=sdk /Pyroscope.Profiler.Native.so ./Pyroscope.Profiler.Native.so
 COPY --from=sdk /Pyroscope.Linux.ApiWrapper.x64.so ./Pyroscope.Linux.ApiWrapper.x64.so
-COPY --from=build /dotnet/ ./
+COPY --from=build /dotnet/publish/ ./
 
 
 ENV CORECLR_ENABLE_PROFILING=1
@@ -58,4 +62,5 @@ ENV RIDESHARE_LISTEN_PORT=5000
 ENV ASPNETCORE_URLS=http://*:5000
 
 
+ENTRYPOINT ["/usr/bin/dotnet"]
 CMD ["/dotnet/example.dll"]

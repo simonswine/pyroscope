@@ -8,6 +8,7 @@ HOSTS = [
     'eu-north',
     'ap-south',
     'ap-south-alpine',
+    'us-east-net10',
 ]
 
 VEHICLES = [
