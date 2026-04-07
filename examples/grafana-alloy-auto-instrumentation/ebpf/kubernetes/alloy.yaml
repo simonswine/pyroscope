@@ -75,14 +75,42 @@ spec:
           volumeMounts:
             - name: alloy-config
               mountPath: /etc/alloy-config
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            - name: sys-kernel-tracing
+              mountPath: /sys/kernel/tracing
+              readOnly: true
           securityContext:
-            privileged: true
-            runAsGroup: 0
             runAsUser: 0
+            allowPrivilegeEscalation: false
+            # AppArmor (Ubuntu/Debian nodes) and SELinux (RHEL/CentOS nodes) enforce their own
+            # policies after capability checks. Without Unconfined, the default container profile
+            # blocks opening /proc/<pid>/map_files/* magic-links even with SYS_PTRACE present,
+            # causing "operation not permitted" errors when reading ELF files for symbol resolution.
+            appArmorProfile:
+              type: Unconfined
+            seccompProfile:
+              type: Unconfined
+            capabilities:
+              add:
+                - BPF               # load and manage eBPF programs and maps
+                - PERFMON           # attach perf events and read performance counters used by eBPF
+                - SYS_PTRACE        # satisfies the ptrace_may_access() credential check when accessing /proc/<pid>/ entries
+                - CHECKPOINT_RESTORE # allows following magic-links in /proc/<pid>/map_files/* for ELF symbol reading (requires kernel 5.9+; on older kernels SYS_ADMIN is needed instead); without this, opening map_files entries returns EPERM even with SYS_PTRACE
+                - SYS_RESOURCE      # raise RLIMIT_MEMLOCK so eBPF maps can be locked in memory
+                - DAC_READ_SEARCH   # bypass DAC read/search permission bits when opening ELF binaries and /proc entries (does NOT bypass LSM — see appArmorProfile above)
+                - SYSLOG            # read kernel ring buffer (dmesg) for eBPF verifier errors and kernel log output
       volumes:
         - name: alloy-config
           configMap:
             name: alloy-config
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: sys-kernel-tracing
+          hostPath:
+            path: /sys/kernel/tracing
 
       hostPID: true
 
