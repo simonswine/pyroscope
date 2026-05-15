@@ -1,0 +1,6 @@
+# Copy this file to bench.pkrvars.hcl and fill in your values.
+# bench.pkrvars.hcl is gitignored.
+
+project_id   = "my-gcp-project"
+zone         = "us-central1-a"
+machine_type = "n2-standard-8"

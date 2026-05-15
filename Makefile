@@ -392,6 +392,15 @@ $(BIN)/mockery: Makefile go.mod
 	@mkdir -p $(@D)
 	GOBIN=$(abspath $(@D)) $(GO) install github.com/vektra/mockery/v2@v2.53.4
 
+PACKER_VERSION := 1.11.2
+$(BIN)/packer: Makefile
+	@mkdir -p $(@D)
+	curl -fsSL "https://releases.hashicorp.com/packer/$(PACKER_VERSION)/packer_$(PACKER_VERSION)_$(GOOS)_$(GOARCH).zip" \
+	  -o /tmp/packer.zip
+	unzip -qo /tmp/packer.zip -d $(BIN)
+	chmod +x $(BIN)/packer
+	rm /tmp/packer.zip
+
 # Note: When updating the goreleaser version also update .github/workflow/release.yml and .git/workflow/weekly-release.yaml
 $(BIN)/goreleaser: Makefile go.mod
 	@mkdir -p $(@D)
@@ -497,3 +506,27 @@ run: ## Run the pyroscope binary (pass parameters with 'make run PARAMS=-myparam
 .PHONY: mockery
 mockery: $(BIN)/mockery
 	$(BIN)/mockery
+
+# ── Benchmark targets ──────────────────────────────────────────────────────────
+
+BENCH_TAR      ?= /tmp/pyroscope-bench.tar.gz
+BENCH_DURATION ?= 10m
+BENCH_RATE     ?= 20
+BENCH_VARS     ?= tools/pyrobench/packer/bench.pkrvars.hcl
+
+.PHONY: bench-image
+bench-image: ## Build a linux/amd64 Pyroscope image tagged pyroscope:bench and save to BENCH_TAR
+	docker buildx build --platform linux/amd64 \
+	  -t pyroscope:bench --load .
+	docker save pyroscope:bench | gzip > $(BENCH_TAR)
+	@echo "Image saved to $(BENCH_TAR) ($$(du -sh $(BENCH_TAR) | cut -f1))"
+
+.PHONY: bench
+bench: bench-image $(BIN)/packer ## Build image, provision GCP VM via Packer, run benchmark, fetch results
+	$(BIN)/packer init tools/pyrobench/packer/bench.pkr.hcl
+	$(BIN)/packer build \
+	  -var "image_tar=$(BENCH_TAR)" \
+	  -var "bench_duration=$(BENCH_DURATION)" \
+	  -var "bench_rate=$(BENCH_RATE)" \
+	  -var-file="$(BENCH_VARS)" \
+	  tools/pyrobench/packer/bench.pkr.hcl

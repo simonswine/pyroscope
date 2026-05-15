@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+data:
+  bench.yml: |
+    groups:
+      - name: bench
+        interval: 15s
+        rules:
+          - record: bench:ingest_rate:rate1m
+            expr: sum(rate(pyroscope_distributor_received_samples_total[1m]))
+
+          - record: bench:push_p99:rate1m
+            expr: histogram_quantile(0.99, sum(rate(bench_push_duration_seconds_bucket[1m])) by (le))
+
+          - record: bench:query_p99:rate1m
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(pyroscope_request_duration_seconds_bucket{handler="SelectMergeProfile"}[1m])) by (le))
+
+          - record: bench:error_rate:rate1m
+            expr: |
+              sum(rate(pyroscope_request_duration_seconds_count{status_code=~"5.."}[1m]))
+              /
+              sum(rate(pyroscope_request_duration_seconds_count[1m]))

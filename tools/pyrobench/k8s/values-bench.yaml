@@ -1,0 +1,117 @@
+# Helm values for the e2e benchmark cluster.
+# Sized for a GCP n2-standard-8 (8 vCPU, 32 GB) running a single-node kind cluster.
+# Based on values-micro-services.yaml, scaled down from production sizing.
+
+pyroscope:
+  image:
+    tag: bench
+
+  extraArgs:
+    store-gateway.sharding-ring.replication-factor: "1"
+    # Flush blocks quickly so data is queryable during the benchmark window
+    pyroscopedb.max-block-duration: 5m
+
+  components:
+    distributor:
+      kind: Deployment
+      replicaCount: 2
+      resources:
+        requests:
+          cpu: 500m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+
+    ingester:
+      kind: StatefulSet
+      replicaCount: 3
+      terminationGracePeriodSeconds: 60
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+
+    querier:
+      kind: Deployment
+      replicaCount: 2
+      resources:
+        requests:
+          cpu: 500m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+
+    query-frontend:
+      kind: Deployment
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
+    query-scheduler:
+      kind: Deployment
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
+    store-gateway:
+      kind: StatefulSet
+      replicaCount: 1
+      persistence:
+        enabled: false
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+    compactor:
+      kind: StatefulSet
+      replicaCount: 1
+      terminationGracePeriodSeconds: 60
+      persistence:
+        enabled: false
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+    tenant-settings:
+      kind: Deployment
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+minio:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
