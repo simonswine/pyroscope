@@ -8,9 +8,12 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -89,13 +92,18 @@ func main() {
 		}
 	}
 
-	// Copy the real cpu.pprof from the repo's testdata directory as-is.
-	// It is gzip-compressed protobuf (standard pprof format); Pyroscope handles
-	// both compressed and uncompressed pprof on the ingest path.
+	// Copy the real cpu.pprof from the repo's testdata directory, decompressing
+	// it so the result is raw protobuf like the synthetic profiles above.
+	// (Standard pprof files are gzip-compressed protobuf; we normalise here so
+	// every file in the dataset is in the same raw format.)
 	realSrc := filepath.Join("pkg", "og", "convert", "testdata", "cpu.pprof")
-	if data, err := os.ReadFile(realSrc); err == nil {
+	if compressed, err := os.ReadFile(realSrc); err == nil {
+		raw, err := gunzip(compressed)
+		if err != nil {
+			log.Fatalf("decompress %s: %v", realSrc, err)
+		}
 		const realDest = "profiles/real-cpu.pprof"
-		if err := os.WriteFile(filepath.Join(*out, "profiles", "real-cpu.pprof"), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(*out, "profiles", "real-cpu.pprof"), raw, 0o644); err != nil {
 			log.Fatalf("write real-cpu.pprof: %v", err)
 		}
 		entries = append(entries, ProfileEntry{
@@ -105,13 +113,23 @@ func main() {
 			SampleType:  "cpu",
 			Labels:      map[string]string{"namespace": "bench"},
 		})
-		log.Printf("copied %s → %s", realSrc, realDest)
+		log.Printf("copied+decompressed %s → %s", realSrc, realDest)
 	} else {
 		log.Printf("warning: skipping real cpu.pprof (%v)", err)
 	}
 
 	writeManifest(filepath.Join(*out, "manifest.json"), entries)
 	fmt.Printf("generated %d profiles in %s\n", len(entries), *out)
+}
+
+// gunzip decompresses gzip-compressed data.
+func gunzip(data []byte) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }
 
 func writeManifest(path string, entries []ProfileEntry) {
