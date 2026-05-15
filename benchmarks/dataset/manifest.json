@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "file": "profiles/service-a-cpu.pprof",
+      "service_name": "service-a",
+      "profile_type": "process_cpu",
+      "sample_type": "cpu",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/service-a-memory.pprof",
+      "service_name": "service-a",
+      "profile_type": "memory",
+      "sample_type": "alloc_space",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/service-b-cpu.pprof",
+      "service_name": "service-b",
+      "profile_type": "process_cpu",
+      "sample_type": "cpu",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/service-b-memory.pprof",
+      "service_name": "service-b",
+      "profile_type": "memory",
+      "sample_type": "alloc_space",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/service-c-cpu.pprof",
+      "service_name": "service-c",
+      "profile_type": "process_cpu",
+      "sample_type": "cpu",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/service-c-memory.pprof",
+      "service_name": "service-c",
+      "profile_type": "memory",
+      "sample_type": "alloc_space",
+      "labels": {
+        "namespace": "bench",
+        "region": "us-east-1"
+      }
+    },
+    {
+      "file": "profiles/real-cpu.pprof",
+      "service_name": "real-service",
+      "profile_type": "process_cpu",
+      "sample_type": "cpu",
+      "labels": {
+        "namespace": "bench"
+      }
+    }
+  ]
+}
