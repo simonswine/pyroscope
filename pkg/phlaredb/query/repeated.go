@@ -24,6 +24,20 @@ type RepeatedRow[T any] struct {
 	Values [][]parquet.Value
 }
 
+type RepeatedColumnMorsel struct {
+	Values  []parquet.Value
+	Offsets []int
+}
+
+func (m RepeatedColumnMorsel) Row(i int) []parquet.Value {
+	return m.Values[m.Offsets[i]:m.Offsets[i+1]]
+}
+
+type RepeatedRowMorsel[T any] struct {
+	Rows    []T
+	Columns []RepeatedColumnMorsel
+}
+
 type repeatedRowIterator[T any] struct {
 	columns iter.Iterator[[][]parquet.Value]
 	rows    iter.Iterator[T]
@@ -105,6 +119,179 @@ func (x *repeatedRowIterator[T]) Close() error {
 	return x.columns.Close()
 }
 
+type repeatedRowMorselIterator[T any] struct {
+	ctx context.Context
+
+	rows    iter.Iterator[T]
+	rgs     []parquet.RowGroup
+	columns []int
+	maxRows int
+
+	rgIndex int
+	rgMin   int64
+	rgMax   int64
+
+	pending    T
+	pendingRow int64
+	hasPending bool
+
+	rowNumbers []int64
+	morsel     RepeatedRowMorsel[T]
+	err        error
+}
+
+func NewRepeatedRowMorselIteratorBatchSize[T any](
+	ctx context.Context,
+	rows iter.Iterator[T],
+	rowGroups []parquet.RowGroup,
+	batchSize int64,
+	columns ...int,
+) iter.Iterator[RepeatedRowMorsel[T]] {
+	if len(rowGroups) == 0 {
+		return iter.NewEmptyIterator[RepeatedRowMorsel[T]]()
+	}
+	if batchSize <= 0 {
+		batchSize = defaultBatchSize
+	}
+	return &repeatedRowMorselIterator[T]{
+		ctx:     ctx,
+		rows:    rows,
+		rgs:     rowGroups,
+		columns: columns,
+		maxRows: int(batchSize),
+	}
+}
+
+func (x *repeatedRowMorselIterator[T]) Next() bool {
+	if x.err != nil {
+		return false
+	}
+	if err := x.ctx.Err(); err != nil {
+		x.err = err
+		return false
+	}
+
+	row, rn, ok := x.nextRow()
+	if !ok {
+		return false
+	}
+	rgIndex, rgMin, rgMax, ok := x.seekRowGroup(rn)
+	if !ok {
+		return false
+	}
+
+	x.morsel.Rows = x.morsel.Rows[:0]
+	x.rowNumbers = x.rowNumbers[:0]
+	x.appendRow(row, rn-rgMin)
+
+	for len(x.morsel.Rows) < x.maxRows {
+		row, rn, ok = x.nextRow()
+		if !ok {
+			break
+		}
+		if rn >= rgMax {
+			x.pending = row
+			x.pendingRow = rn
+			x.hasPending = true
+			break
+		}
+		if rn < rgMin {
+			x.err = ErrSeekOutOfRange
+			return false
+		}
+		x.appendRow(row, rn-rgMin)
+	}
+
+	if err := x.readColumns(x.rgs[rgIndex]); err != nil {
+		x.err = err
+		return false
+	}
+	return true
+}
+
+func (x *repeatedRowMorselIterator[T]) appendRow(row T, localRowNumber int64) {
+	x.morsel.Rows = append(x.morsel.Rows, row)
+	x.rowNumbers = append(x.rowNumbers, localRowNumber)
+}
+
+func (x *repeatedRowMorselIterator[T]) nextRow() (row T, rn int64, ok bool) {
+	if x.hasPending {
+		x.hasPending = false
+		return x.pending, x.pendingRow, true
+	}
+	if !x.rows.Next() {
+		x.err = x.rows.Err()
+		return row, 0, false
+	}
+	row = x.rows.At()
+	return row, rowNumberOf(row), true
+}
+
+func (x *repeatedRowMorselIterator[T]) seekRowGroup(rn int64) (index int, min, max int64, ok bool) {
+	if rn < x.rgMin {
+		x.err = ErrSeekOutOfRange
+		return 0, 0, 0, false
+	}
+	for x.rgIndex < len(x.rgs) && rn >= x.rgMax {
+		x.rgMin = x.rgMax
+		x.rgMax += x.rgs[x.rgIndex].NumRows()
+		x.rgIndex++
+	}
+	if rn >= x.rgMax {
+		x.err = ErrSeekOutOfRange
+		return 0, 0, 0, false
+	}
+	return x.rgIndex - 1, x.rgMin, x.rgMax, true
+}
+
+func (x *repeatedRowMorselIterator[T]) readColumns(rg parquet.RowGroup) error {
+	if cap(x.morsel.Columns) < len(x.columns) {
+		x.morsel.Columns = make([]RepeatedColumnMorsel, len(x.columns))
+	}
+	x.morsel.Columns = x.morsel.Columns[:len(x.columns)]
+
+	for i, column := range x.columns {
+		c := &x.morsel.Columns[i]
+		c.Values = c.Values[:0]
+		if cap(c.Offsets) < len(x.morsel.Rows)+1 {
+			c.Offsets = make([]int, len(x.morsel.Rows)+1)
+		}
+		c.Offsets = c.Offsets[:len(x.morsel.Rows)+1]
+		for j := range c.Offsets {
+			c.Offsets[j] = 0
+		}
+
+		rows := iter.NewSliceIterator(x.rowNumbers)
+		values := NewRepeatedRowColumnIterator(x.ctx, rows, []parquet.RowGroup{rg}, column)
+		for row := range x.morsel.Rows {
+			if !values.Next() {
+				err := values.Err()
+				if err == nil {
+					err = ErrSeekOutOfRange
+				}
+				_ = values.Close()
+				return err
+			}
+			for _, v := range values.At() {
+				c.Values = append(c.Values, v.Clone())
+			}
+			c.Offsets[row+1] = len(c.Values)
+		}
+		if err := values.Err(); err != nil {
+			_ = values.Close()
+			return err
+		}
+		if err := values.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (x *repeatedRowMorselIterator[T]) At() RepeatedRowMorsel[T] { return x.morsel }
+func (x *repeatedRowMorselIterator[T]) Err() error               { return x.err }
+func (x *repeatedRowMorselIterator[T]) Close() error             { return nil }
+
 type rowNumberIterator[T any] struct{ it iter.Iterator[T] }
 
 func WrapWithRowNumber[T any](it iter.Iterator[T]) iter.Iterator[int64] {
@@ -116,7 +303,11 @@ func (x *rowNumberIterator[T]) Err() error   { return x.it.Err() }
 func (x *rowNumberIterator[T]) Close() error { return x.it.Close() }
 
 func (x *rowNumberIterator[T]) At() int64 {
-	v := any(x.it.At())
+	return rowNumberOf(x.it.At())
+}
+
+func rowNumberOf[T any](row T) int64 {
+	v := any(row)
 	switch r := v.(type) {
 	case RowGetter:
 		return r.RowNumber()

@@ -409,6 +409,134 @@ func Test_RepeatedRowPageIterator_MultipleColumns(t *testing.T) {
 	}
 }
 
+func Test_RepeatedRowMorselIterator(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		batchSize int64
+		rows      []testRowGetter
+		rgs       [][]multiColumnRepeatedTestRow
+		expected  []RepeatedRow[testRowGetter]
+	}{
+		{
+			name:      "single row group multiple columns",
+			batchSize: 10,
+			rows: []testRowGetter{
+				{0},
+				{1},
+			},
+			rgs: [][]multiColumnRepeatedTestRow{
+				{
+					{List: []multiColumnItem{{1, 2}, {3, 4}}},
+					{List: []multiColumnItem{{5, 6}}},
+				},
+			},
+			expected: []RepeatedRow[testRowGetter]{
+				{
+					Row: testRowGetter{0},
+					Values: [][]parquet.Value{
+						{parquet.ValueOf(1), parquet.ValueOf(3)},
+						{parquet.ValueOf(2), parquet.ValueOf(4)},
+					},
+				},
+				{
+					Row: testRowGetter{1},
+					Values: [][]parquet.Value{
+						{parquet.ValueOf(5)},
+						{parquet.ValueOf(6)},
+					},
+				},
+			},
+		},
+		{
+			name:      "does not cross row groups",
+			batchSize: 10,
+			rows: []testRowGetter{
+				{1},
+				{2},
+				{3},
+			},
+			rgs: [][]multiColumnRepeatedTestRow{
+				{
+					{List: []multiColumnItem{{0, 0}}},
+					{List: []multiColumnItem{{1, 2}}},
+				},
+				{
+					{List: []multiColumnItem{{3, 4}}},
+					{List: []multiColumnItem{{5, 6}}},
+				},
+			},
+			expected: []RepeatedRow[testRowGetter]{
+				{testRowGetter{1}, [][]parquet.Value{{parquet.ValueOf(1)}, {parquet.ValueOf(2)}}},
+				{testRowGetter{2}, [][]parquet.Value{{parquet.ValueOf(3)}, {parquet.ValueOf(4)}}},
+				{testRowGetter{3}, [][]parquet.Value{{parquet.ValueOf(5)}, {parquet.ValueOf(6)}}},
+			},
+		},
+		{
+			name:      "honors batch size",
+			batchSize: 2,
+			rows: []testRowGetter{
+				{0},
+				{1},
+				{2},
+			},
+			rgs: [][]multiColumnRepeatedTestRow{
+				{
+					{List: []multiColumnItem{{1, 2}}},
+					{List: []multiColumnItem{{3, 4}}},
+					{List: []multiColumnItem{{5, 6}}},
+				},
+			},
+			expected: []RepeatedRow[testRowGetter]{
+				{testRowGetter{0}, [][]parquet.Value{{parquet.ValueOf(1)}, {parquet.ValueOf(2)}}},
+				{testRowGetter{1}, [][]parquet.Value{{parquet.ValueOf(3)}, {parquet.ValueOf(4)}}},
+				{testRowGetter{2}, [][]parquet.Value{{parquet.ValueOf(5)}, {parquet.ValueOf(6)}}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var groups []parquet.RowGroup
+			for _, rg := range tc.rgs {
+				buffer := parquet.NewBuffer()
+				for _, row := range rg {
+					require.NoError(t, buffer.Write(row))
+				}
+				groups = append(groups, buffer)
+			}
+
+			it := NewRepeatedRowMorselIteratorBatchSize(
+				context.Background(),
+				iter.NewSliceIterator(tc.rows),
+				groups,
+				tc.batchSize,
+				0,
+				1,
+			)
+			actual, rowCounts := readRepeatedRowMorselIterator(t, it)
+			if diff := cmp.Diff(tc.expected, actual, int64ParquetComparer()); diff != "" {
+				t.Errorf("result mismatch (-want +got):\n%s", diff)
+			}
+			if tc.name == "does not cross row groups" {
+				assert.Equal(t, []int{1, 2}, rowCounts)
+			}
+			if tc.name == "honors batch size" {
+				assert.Equal(t, []int{2, 1}, rowCounts)
+			}
+		})
+	}
+}
+
+func Test_RepeatedRowMorselIterator_Cancellation(t *testing.T) {
+	buffer := parquet.NewBuffer()
+	require.NoError(t, buffer.Write(repeatedTestRow{List: []int64{1}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	it := NewRepeatedRowMorselIteratorBatchSize(ctx, iter.NewSliceIterator([]testRowGetter{{0}}), []parquet.RowGroup{buffer}, 10, 0)
+	assert.False(t, it.Next())
+	assert.ErrorIs(t, it.Err(), context.Canceled)
+	assert.NoError(t, it.Close())
+}
+
 func readRepeatedRowIterator(t *testing.T, it iter.Iterator[RepeatedRow[testRowGetter]]) []RepeatedRow[testRowGetter] {
 	defer func() {
 		require.NoError(t, it.Close())
@@ -434,6 +562,32 @@ func readRepeatedRowIterator(t *testing.T, it iter.Iterator[RepeatedRow[testRowG
 	}
 	require.NoError(t, it.Err())
 	return result
+}
+
+func readRepeatedRowMorselIterator(t *testing.T, it iter.Iterator[RepeatedRowMorsel[testRowGetter]]) ([]RepeatedRow[testRowGetter], []int) {
+	defer func() {
+		require.NoError(t, it.Close())
+	}()
+	var result []RepeatedRow[testRowGetter]
+	var rowCounts []int
+	for it.Next() {
+		m := it.At()
+		rowCounts = append(rowCounts, len(m.Rows))
+		for i, row := range m.Rows {
+			current := RepeatedRow[testRowGetter]{
+				Row:    row,
+				Values: make([][]parquet.Value, len(m.Columns)),
+			}
+			for j, c := range m.Columns {
+				values := c.Row(i)
+				current.Values[j] = make([]parquet.Value, len(values))
+				copy(current.Values[j], values)
+			}
+			result = append(result, current)
+		}
+	}
+	require.NoError(t, it.Err())
+	return result, rowCounts
 }
 
 func int64ParquetComparer() cmp.Option {

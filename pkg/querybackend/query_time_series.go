@@ -87,29 +87,33 @@ func executeTimeSeriesQuery(q *queryContext, groupBy []string, exemplarType type
 	annotationKeysColumn, _ := schemav1.ResolveColumnByPath(q.ds.Profiles().Schema(), schemav1.AnnotationKeyColumnPath)
 	annotationValuesColumn, _ := schemav1.ResolveColumnByPath(q.ds.Profiles().Schema(), schemav1.AnnotationValueColumnPath)
 
-	rows := parquetquery.NewRepeatedRowIteratorBatchSize(q.ctx, entries, q.ds.Profiles().RowGroups(), bigBatchSize, column.ColumnIndex, annotationKeysColumn.ColumnIndex, annotationValuesColumn.ColumnIndex)
+	rows := parquetquery.NewRepeatedRowMorselIteratorBatchSize(q.ctx, entries, q.ds.Profiles().RowGroups(), bigBatchSize, column.ColumnIndex, annotationKeysColumn.ColumnIndex, annotationValuesColumn.ColumnIndex)
 	defer runutil.CloseWithErrCapture(&err, rows, "failed to close column iterator")
 
 	builder := timeseries.NewBuilder(groupBy...)
 	for rows.Next() {
-		row := rows.At()
-		annotations := schemav1.Annotations{Keys: make([]string, 0), Values: make([]string, 0)}
-		for _, e := range row.Values {
-			if e[0].Column() == annotationKeysColumn.ColumnIndex && e[0].Kind() == parquet.ByteArray {
-				annotations.Keys = append(annotations.Keys, e[0].String())
+		morsel := rows.At()
+		for i, row := range morsel.Rows {
+			annotations := schemav1.Annotations{Keys: make([]string, 0), Values: make([]string, 0)}
+			for _, e := range morsel.Columns[1].Row(i) {
+				if e.Column() == annotationKeysColumn.ColumnIndex && e.Kind() == parquet.ByteArray {
+					annotations.Keys = append(annotations.Keys, e.String())
+				}
 			}
-			if e[0].Column() == annotationValuesColumn.ColumnIndex && e[0].Kind() == parquet.ByteArray {
-				annotations.Values = append(annotations.Values, e[0].String())
+			for _, e := range morsel.Columns[2].Row(i) {
+				if e.Column() == annotationValuesColumn.ColumnIndex && e.Kind() == parquet.ByteArray {
+					annotations.Values = append(annotations.Values, e.String())
+				}
 			}
+			builder.Add(
+				row.Fingerprint,
+				row.Labels,
+				int64(row.Timestamp),
+				float64(morsel.Columns[0].Row(i)[0].Int64()),
+				annotations,
+				row.ID,
+			)
 		}
-		builder.Add(
-			row.Row.Fingerprint,
-			row.Row.Labels,
-			int64(row.Row.Timestamp),
-			float64(row.Values[0][0].Int64()),
-			annotations,
-			row.Row.ID,
-		)
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
