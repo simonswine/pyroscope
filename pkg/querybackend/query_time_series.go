@@ -73,7 +73,7 @@ func executeTimeSeriesQuery(q *queryContext, groupBy []string, exemplarType type
 		opts = append(opts, withGroupByLabels(groupBy...))
 	}
 
-	entries, err := profileEntryIterator(q, opts...)
+	entries, err := profileEntryMorselIterator(q, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -87,12 +87,22 @@ func executeTimeSeriesQuery(q *queryContext, groupBy []string, exemplarType type
 	annotationKeysColumn, _ := schemav1.ResolveColumnByPath(q.ds.Profiles().Schema(), schemav1.AnnotationKeyColumnPath)
 	annotationValuesColumn, _ := schemav1.ResolveColumnByPath(q.ds.Profiles().Schema(), schemav1.AnnotationValueColumnPath)
 
-	rows := parquetquery.NewRepeatedRowMorselIteratorBatchSize(q.ctx, entries, q.ds.Profiles().RowGroups(), bigBatchSize, column.ColumnIndex, annotationKeysColumn.ColumnIndex, annotationValuesColumn.ColumnIndex)
-	defer runutil.CloseWithErrCapture(&err, rows, "failed to close column iterator")
-
 	builder := timeseries.NewBuilder(groupBy...)
-	for rows.Next() {
-		morsel := rows.At()
+	rowGroups := q.ds.Profiles().RowGroups()
+	for entries.Next() {
+		entryMorsel := entries.At()
+		morsel, err := parquetquery.ReadRepeatedRowMorsel(
+			q.ctx,
+			entryMorsel.Entries,
+			entryMorsel.LocalRows,
+			rowGroups[entryMorsel.RowGroupIndex],
+			column.ColumnIndex,
+			annotationKeysColumn.ColumnIndex,
+			annotationValuesColumn.ColumnIndex,
+		)
+		if err != nil {
+			return nil, err
+		}
 		for i, row := range morsel.Rows {
 			annotations := schemav1.Annotations{Keys: make([]string, 0), Values: make([]string, 0)}
 			for _, e := range morsel.Columns[1].Row(i) {
@@ -115,7 +125,7 @@ func executeTimeSeriesQuery(q *queryContext, groupBy []string, exemplarType type
 			)
 		}
 	}
-	if err = rows.Err(); err != nil {
+	if err = entries.Err(); err != nil {
 		return nil, err
 	}
 

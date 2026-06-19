@@ -32,6 +32,13 @@ type ProfileEntry struct {
 
 func (e ProfileEntry) RowNumber() int64 { return e.RowNum }
 
+type ProfileEntryMorsel struct {
+	RowGroupIndex int
+	RowGroupStart int64
+	Entries       []ProfileEntry
+	LocalRows     []int64
+}
+
 type profileIteratorOption struct {
 	iterator func(*iteratorOpts)
 	series   func(*seriesOpts)
@@ -150,6 +157,40 @@ func (c queryColumns) join(q *queryContext) parquetquery.Iterator {
 	return result
 }
 
+func (c queryColumns) order() []int {
+	order := make([]int, len(c))
+	for idx := range order {
+		order[idx] = idx
+	}
+	slices.SortFunc(order, func(a, b int) int {
+		if r := c[a].priority - c[b].priority; r != 0 {
+			return r
+		}
+		return strings.Compare(c[a].name, c[b].name)
+	})
+	return order
+}
+
+func (c queryColumns) columnMorselIterator(q *queryContext) (iter.Iterator[parquetquery.ColumnMorsel], []string, error) {
+	order := c.order()
+	queries := make([]parquetquery.ColumnQuery, len(order))
+	columnNames := make([]string, len(order))
+	for out, idx := range order {
+		column, err := schemav1.ResolveColumnByPath(q.ds.Profiles().Schema(), strings.Split(c[idx].name, "."))
+		if err != nil {
+			return nil, nil, err
+		}
+		queries[out] = parquetquery.ColumnQuery{
+			Name:      c[idx].name,
+			Index:     column.ColumnIndex,
+			Predicate: c[idx].predicate,
+			Select:    true,
+		}
+		columnNames[out] = c[idx].name
+	}
+	return parquetquery.NewScalarColumnMorselIterator(q.ctx, q.ds.Profiles().RowGroups(), bigBatchSize, queries...), columnNames, nil
+}
+
 func profileEntryIterator(q *queryContext, options ...profileIteratorOption) (iter.Iterator[ProfileEntry], error) {
 	opts := iteratorOptsFromOptions(options)
 
@@ -224,6 +265,111 @@ func profileEntryIterator(q *queryContext, options ...profileIteratorOption) (it
 	)
 	return entries, nil
 }
+
+func profileEntryMorselIterator(q *queryContext, options ...profileIteratorOption) (iter.Iterator[ProfileEntryMorsel], error) {
+	opts := iteratorOptsFromOptions(options)
+
+	series, err := getSeries(q.ds.Index(), q.req.matchers, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	columns := queryColumns{
+		{schemav1.SeriesIndexColumnName, parquetquery.NewMapPredicate(series), 10},
+		{schemav1.TimeNanosColumnName, parquetquery.NewIntBetweenPredicate(q.req.startTime, q.req.endTime), 15},
+	}
+	if opts.fetchPartition {
+		columns = append(columns, queryColumn{schemav1.StacktracePartitionColumnName, nil, 20})
+	}
+	if opts.fetchProfileIDs || len(opts.profileIDSelector) > 0 {
+		var (
+			predicate parquetquery.Predicate
+			priority  = 20
+		)
+		if len(opts.profileIDSelector) > 0 {
+			predicate = parquetquery.NewStringInPredicate(opts.profileIDSelector)
+			priority = 5
+		}
+		columns = append(columns, queryColumn{schemav1.IDColumnName, predicate, priority})
+	}
+
+	morsels, columnNames, err := columns.columnMorselIterator(q)
+	if err != nil {
+		return nil, err
+	}
+	offsets := make(map[string]int, len(columnNames))
+	for i, name := range columnNames {
+		offsets[name] = i
+	}
+
+	return &profileEntryMorselIter{
+		morsels:         morsels,
+		series:          series,
+		seriesOffset:    offsets[schemav1.SeriesIndexColumnName],
+		timeOffset:      offsets[schemav1.TimeNanosColumnName],
+		partitionOffset: offsets[schemav1.StacktracePartitionColumnName],
+		idOffset:        offsets[schemav1.IDColumnName],
+		fetchPartition:  opts.fetchPartition,
+		fetchID:         opts.fetchProfileIDs || len(opts.profileIDSelector) > 0,
+	}, nil
+}
+
+type profileEntryMorselIter struct {
+	morsels iter.Iterator[parquetquery.ColumnMorsel]
+	series  map[uint32]series
+
+	seriesOffset    int
+	timeOffset      int
+	partitionOffset int
+	idOffset        int
+	fetchPartition  bool
+	fetchID         bool
+
+	morsel ProfileEntryMorsel
+	err    error
+}
+
+func (i *profileEntryMorselIter) Next() bool {
+	if !i.morsels.Next() {
+		i.err = i.morsels.Err()
+		return false
+	}
+	m := i.morsels.At()
+	i.morsel.RowGroupIndex = m.RowGroupIndex
+	i.morsel.RowGroupStart = m.RowGroupStart
+	i.morsel.LocalRows = append(i.morsel.LocalRows[:0], m.RowNumbers...)
+	if cap(i.morsel.Entries) < len(m.RowNumbers) {
+		i.morsel.Entries = make([]ProfileEntry, len(m.RowNumbers))
+	}
+	i.morsel.Entries = i.morsel.Entries[:len(m.RowNumbers)]
+	for row := range m.RowNumbers {
+		seriesIndex := m.Columns[i.seriesOffset].Row(row)[0].Uint32()
+		s := i.series[seriesIndex]
+		e := ProfileEntry{
+			RowNum:      m.RowGroupStart + m.RowNumbers[row],
+			Timestamp:   model.TimeFromUnixNano(m.Columns[i.timeOffset].Row(row)[0].Int64()),
+			Fingerprint: s.fingerprint,
+			Labels:      s.labels,
+		}
+		if i.fetchPartition {
+			e.Partition = m.Columns[i.partitionOffset].Row(row)[0].Uint64()
+		}
+		if i.fetchID {
+			b := m.Columns[i.idOffset].Row(row)[0].Bytes()
+			if len(b) == 16 {
+				var u uuid.UUID
+				copy(u[:], b)
+				e.ID = u.String()
+			}
+		}
+		i.morsel.Entries[row] = e
+	}
+	return true
+}
+
+func (i *profileEntryMorselIter) At() ProfileEntryMorsel { return i.morsel }
+func (i *profileEntryMorselIter) Err() error             { return i.err }
+func (i *profileEntryMorselIter) Close() error           { return i.morsels.Close() }
 
 type series struct {
 	fingerprint model.Fingerprint

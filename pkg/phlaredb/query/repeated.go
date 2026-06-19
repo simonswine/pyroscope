@@ -162,6 +162,28 @@ func NewRepeatedRowMorselIteratorBatchSize[T any](
 	}
 }
 
+func ReadRepeatedRowMorsel[T any](
+	ctx context.Context,
+	rows []T,
+	rowNumbers []int64,
+	rowGroup parquet.RowGroup,
+	columns ...int,
+) (RepeatedRowMorsel[T], error) {
+	if len(rows) != len(rowNumbers) {
+		return RepeatedRowMorsel[T]{}, fmt.Errorf("rows and row numbers length mismatch: %d != %d", len(rows), len(rowNumbers))
+	}
+	it := repeatedRowMorselIterator[T]{
+		ctx:        ctx,
+		columns:    columns,
+		rowNumbers: rowNumbers,
+	}
+	it.morsel.Rows = append(it.morsel.Rows, rows...)
+	if err := it.readColumns(rowGroup); err != nil {
+		return RepeatedRowMorsel[T]{}, err
+	}
+	return it.morsel, nil
+}
+
 func (x *repeatedRowMorselIterator[T]) Next() bool {
 	if x.err != nil {
 		return false
