@@ -145,21 +145,114 @@ func (r *Reader) matchingEntities(ctx context.Context, matchers []Matcher) ([]En
 	if err != nil {
 		return nil, err
 	}
-	result := entities[:0]
-	for _, entity := range entities {
-		matched := true
-		for i, matcher := range matchers {
-			attribute, present := findAttribute(entity.Attributes, matcher.Key)
-			if !matches(attribute.Value, present, matcher, compiled[i]) {
-				matched = false
-				break
-			}
+	// Keep full entity decoding as the correctness reference while the forward
+	// column page is pending. Candidate construction itself uses persisted
+	// postings, so adding that page only changes materialization, not matcher
+	// semantics.
+	dictionaries, err := r.Dictionaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	postings, err := r.Postings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	candidate := make([]bool, len(entities))
+	for i := range candidate {
+		candidate[i] = true
+	}
+	for i, matcher := range matchers {
+		matcherCandidate := postingCandidate(len(entities), r.keys, dictionaries, postings, matcher, compiled[i])
+		for entityID := range candidate {
+			candidate[entityID] = candidate[entityID] && matcherCandidate[entityID]
 		}
-		if matched {
+	}
+	result := entities[:0]
+	for entityID, entity := range entities {
+		if candidate[entityID] {
 			result = append(result, entity)
 		}
 	}
 	return result, nil
+}
+
+func postingCandidate(entityCount int, keys []Key, dictionaries [][]Value, postings [][][]uint32, matcher Matcher, re *regexp.Regexp) []bool {
+	result := make([]bool, entityCount)
+	keyIndex, found := slices.BinarySearchFunc(keys, matcher.Key, compareKey)
+	if !found {
+		// Every entity is absent, which is equivalent to an empty string for
+		// legacy string matchers.
+		return absentCandidate(result, matcher, re)
+	}
+	presence := postings[keyIndex][0]
+	mark := func(posting []uint32) {
+		for _, entityID := range posting {
+			if int(entityID) < len(result) {
+				result[entityID] = true
+			}
+		}
+	}
+	switch matcher.Operator {
+	case MatchEqual:
+		if valueID, ok := slices.BinarySearchFunc(dictionaries[keyIndex], matcher.Value, compareValue); ok {
+			mark(postings[keyIndex][valueID+1])
+		}
+		if matcher.Value.Type == ValueString && len(matcher.Value.Data) == 0 {
+			for entityID := range result {
+				if !containsEntity(presence, uint32(entityID)) {
+					result[entityID] = true
+				}
+			}
+		}
+	case MatchNotEqual:
+		for entityID := range result {
+			result[entityID] = true
+		}
+		if valueID, ok := slices.BinarySearchFunc(dictionaries[keyIndex], matcher.Value, compareValue); ok {
+			for _, entityID := range postings[keyIndex][valueID+1] {
+				result[entityID] = false
+			}
+		}
+		if matcher.Value.Type == ValueString && len(matcher.Value.Data) == 0 {
+			for entityID := range result {
+				if !containsEntity(presence, uint32(entityID)) {
+					result[entityID] = false
+				}
+			}
+		}
+	case MatchRegexp, MatchNotRegexp:
+		for valueID, value := range dictionaries[keyIndex] {
+			if value.Type == ValueString && re.Match(value.Data) {
+				mark(postings[keyIndex][valueID+1])
+			}
+		}
+		if re.Match(nil) {
+			for entityID := range result {
+				if !containsEntity(presence, uint32(entityID)) {
+					result[entityID] = true
+				}
+			}
+		}
+		if matcher.Operator == MatchNotRegexp {
+			for entityID := range result {
+				result[entityID] = !result[entityID]
+			}
+		}
+	}
+	return result
+}
+
+func absentCandidate(result []bool, matcher Matcher, re *regexp.Regexp) []bool {
+	matches := matches(Value{}, false, matcher, re)
+	for i := range result {
+		result[i] = matches
+	}
+	return result
+}
+
+func containsEntity(posting []uint32, entityID uint32) bool {
+	_, found := slices.BinarySearch(posting, entityID)
+	return found
 }
 
 func matches(value Value, present bool, matcher Matcher, re *regexp.Regexp) bool {
