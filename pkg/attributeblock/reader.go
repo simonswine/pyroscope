@@ -119,6 +119,32 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 	return values, nil
 }
 
+// Postings returns per-key postings aligned with Keys and Dictionaries. The
+// zeroth posting for every key is its presence posting; following postings are
+// aligned with that key's sorted value dictionary.
+func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
+	dictionaries, err := r.Dictionaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	page, ok := r.page(pagePostings)
+	if !ok {
+		return nil, fmt.Errorf("AttributeBlockV1 is missing its postings page")
+	}
+	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	if err != nil {
+		return nil, fmt.Errorf("reading postings page: %w", err)
+	}
+	if checksum(data) != page.crc32 {
+		return nil, fmt.Errorf("postings page checksum mismatch")
+	}
+	postings, err := decodePostings(data, dictionaries)
+	if err != nil {
+		return nil, fmt.Errorf("decoding postings page: %w", err)
+	}
+	return postings, nil
+}
+
 func (r *Reader) page(kind pageKind) (pageDescriptor, bool) {
 	for _, page := range r.pages {
 		if page.kind == kind {

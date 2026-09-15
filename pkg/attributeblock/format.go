@@ -24,6 +24,7 @@ type pageKind uint8
 const (
 	pageEntity pageKind = iota + 1
 	pageDictionary
+	pagePostings
 )
 
 type pageDescriptor struct {
@@ -145,7 +146,7 @@ func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
 			return Metadata{}, nil, nil, fmt.Errorf("reading page descriptor: %w", err)
 		}
 		pages[i] = pageDescriptor{kind: pageKind(fixed[0]), offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]), crc32: binary.LittleEndian.Uint32(fixed[20:24])}
-		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
+		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
 			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
 		}
 	}

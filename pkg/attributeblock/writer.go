@@ -58,22 +58,29 @@ func (w *Writer) Bytes() ([]byte, error) {
 		return nil, err
 	}
 	keys := w.keys()
-	dictionaryPage, err := encodeDictionaries(keys, w.entities)
+	dictionaries, err := buildDictionaries(keys, w.entities)
 	if err != nil {
 		return nil, err
 	}
-	if len(entityPage) > maxPageLen || len(dictionaryPage) > maxPageLen {
+	dictionaryPage := encodeDictionaries(dictionaries)
+	postingsPage, err := encodePostings(keys, dictionaries, w.entities)
+	if err != nil {
+		return nil, err
+	}
+	if len(entityPage) > maxPageLen || len(dictionaryPage) > maxPageLen || len(postingsPage) > maxPageLen {
 		return nil, fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
 	}
-	object := make([]byte, headerSize, headerSize+len(entityPage)+len(dictionaryPage)+512+footerSize)
+	object := make([]byte, headerSize, headerSize+len(entityPage)+len(dictionaryPage)+len(postingsPage)+512+footerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
 	object = append(object, entityPage...)
 	object = append(object, dictionaryPage...)
+	object = append(object, postingsPage...)
 	directoryOffset := int64(len(object))
 	directory := encodeDirectory(w.metadata, keys, []pageDescriptor{
 		{kind: pageEntity, offset: headerSize, length: uint32(len(entityPage)), crc32: checksum(entityPage)},
 		{kind: pageDictionary, offset: headerSize + int64(len(entityPage)), length: uint32(len(dictionaryPage)), crc32: checksum(dictionaryPage)},
+		{kind: pagePostings, offset: headerSize + int64(len(entityPage)+len(dictionaryPage)), length: uint32(len(postingsPage)), crc32: checksum(postingsPage)},
 	})
 	object = append(object, directory...)
 	var footer [footerSize]byte
@@ -97,7 +104,7 @@ func (w *Writer) keys() []Key {
 	return compactKeys(keys)
 }
 
-func encodeDictionaries(keys []Key, entities []Entity) ([]byte, error) {
+func buildDictionaries(keys []Key, entities []Entity) ([][]Value, error) {
 	values := make([][]Value, len(keys))
 	for _, entity := range entities {
 		for _, attribute := range entity.Attributes {
@@ -108,17 +115,115 @@ func encodeDictionaries(keys []Key, entities []Entity) ([]byte, error) {
 			values[i] = append(values[i], attribute.Value)
 		}
 	}
-	b := appendUvarint(nil, uint64(len(keys)))
+	for i := range values {
+		slices.SortFunc(values[i], compareValue)
+		values[i] = compactValues(values[i])
+	}
+	return values, nil
+}
+
+func encodeDictionaries(values [][]Value) []byte {
+	b := appendUvarint(nil, uint64(len(values)))
 	for _, dictionary := range values {
-		slices.SortFunc(dictionary, compareValue)
-		dictionary = compactValues(dictionary)
 		b = appendUvarint(b, uint64(len(dictionary)))
 		for _, value := range dictionary {
 			b = append(b, byte(value.Type))
 			b = appendBytes(b, value.Data)
 		}
 	}
+	return b
+}
+
+// encodePostings stores sorted entity IDs for presence and each dictionary
+// value. Dictionary positions are local to this immutable block.
+func encodePostings(keys []Key, dictionaries [][]Value, entities []Entity) ([]byte, error) {
+	b := appendUvarint(nil, uint64(len(keys)))
+	for keyIndex, key := range keys {
+		presence := make([]uint32, 0)
+		valuePostings := make([][]uint32, len(dictionaries[keyIndex]))
+		for entityID, entity := range entities {
+			attribute, found := findAttribute(entity.Attributes, key)
+			if !found {
+				continue
+			}
+			presence = append(presence, uint32(entityID))
+			valueID, found := slices.BinarySearchFunc(dictionaries[keyIndex], attribute.Value, compareValue)
+			if !found {
+				return nil, fmt.Errorf("attribute value missing from dictionary")
+			}
+			valuePostings[valueID] = append(valuePostings[valueID], uint32(entityID))
+		}
+		b = appendPosting(b, presence)
+		for _, posting := range valuePostings {
+			b = appendPosting(b, posting)
+		}
+	}
 	return b, nil
+}
+
+func appendPosting(b []byte, posting []uint32) []byte {
+	b = appendUvarint(b, uint64(len(posting)))
+	var previous uint32
+	for i, entityID := range posting {
+		delta := entityID
+		if i > 0 {
+			delta -= previous
+		}
+		b = appendUvarint(b, uint64(delta))
+		previous = entityID
+	}
+	return b
+}
+
+func decodePostings(page []byte, dictionaries [][]Value) ([][][]uint32, error) {
+	r := bytes.NewReader(page)
+	keyCount, err := readUvarint(r)
+	if err != nil || keyCount != uint64(len(dictionaries)) {
+		return nil, fmt.Errorf("invalid postings key count %d", keyCount)
+	}
+	postings := make([][][]uint32, len(dictionaries))
+	for i := range postings {
+		postings[i] = make([][]uint32, len(dictionaries[i])+1)
+		for j := range postings[i] {
+			posting, err := readPosting(r)
+			if err != nil {
+				return nil, fmt.Errorf("reading posting for key %d value %d: %w", i, j, err)
+			}
+			postings[i][j] = posting
+		}
+	}
+	if _, err := r.ReadByte(); err != io.EOF {
+		return nil, fmt.Errorf("trailing postings page bytes")
+	}
+	return postings, nil
+}
+
+func readPosting(r *bytes.Reader) ([]uint32, error) {
+	count, err := readUvarint(r)
+	if err != nil || count > 1<<32-1 {
+		return nil, fmt.Errorf("invalid posting length %d", count)
+	}
+	posting := make([]uint32, count)
+	var previous uint32
+	for i := range posting {
+		delta, err := readUvarint(r)
+		if err != nil || delta > uint64(^uint32(0)) {
+			return nil, fmt.Errorf("invalid posting delta %d", delta)
+		}
+		entityID := uint32(delta)
+		if i > 0 {
+			if uint64(previous)+delta > uint64(^uint32(0)) {
+				return nil, fmt.Errorf("posting entity ID overflow")
+			}
+			entityID += previous
+		}
+		if i > 0 && entityID <= previous {
+			return nil, fmt.Errorf("posting is not strictly sorted")
+		}
+		posting[i] = entityID
+		previous = entityID
+	}
+	return posting, nil
 }
 
 func encodeEntities(entities []Entity) ([]byte, error) {

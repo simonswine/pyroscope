@@ -55,6 +55,11 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []Value{StringValue(""), StringValue("api")}, values)
 	require.Equal(t, 4, source.calls, "unfiltered values must use the dictionary page")
+	postings, err := reader.Postings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []uint32{0, 1}, postings[0][0])
+	require.Equal(t, []uint32{1}, postings[0][1])
+	require.Equal(t, []uint32{0}, postings[0][2])
 
 	entities, err := reader.Entities(context.Background())
 	require.NoError(t, err)
@@ -69,7 +74,7 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 			{Key: Key{Scope: ScopeResource, Name: "payload"}, Value: BytesValue([]byte{0, 1, 2})},
 		}},
 	}, entities)
-	require.Equal(t, 5, source.calls)
+	require.Equal(t, 7, source.calls)
 }
 
 func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
