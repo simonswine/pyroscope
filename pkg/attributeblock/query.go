@@ -54,14 +54,17 @@ func (r *Reader) Names(ctx context.Context, matchers []Matcher) ([]Key, error) {
 	if len(matchers) == 0 {
 		return r.Keys(), nil
 	}
-	entities, err := r.matchingEntities(ctx, matchers)
+	candidate, _, columns, err := r.candidateIDs(ctx, matchers)
 	if err != nil {
 		return nil, err
 	}
 	keys := make([]Key, 0)
-	for _, entity := range entities {
-		for _, attribute := range entity.Attributes {
-			keys = append(keys, attribute.Key)
+	for keyID, column := range columns {
+		for entityID, valueID := range column {
+			if candidate[entityID] && valueID != 0 {
+				keys = append(keys, r.keys[keyID])
+				break
+			}
 		}
 	}
 	slices.SortFunc(keys, compareKey)
@@ -85,14 +88,19 @@ func (r *Reader) Values(ctx context.Context, key Key, matchers []Matcher) ([]Val
 		}
 		return cloneValues(dictionaries[i]), nil
 	}
-	entities, err := r.matchingEntities(ctx, matchers)
+	candidate, dictionaries, columns, err := r.candidateIDs(ctx, matchers)
 	if err != nil {
 		return nil, err
 	}
+	keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey)
+	if !found {
+		return nil, nil
+	}
 	values := make([]Value, 0)
-	for _, entity := range entities {
-		if attribute, ok := findAttribute(entity.Attributes, key); ok {
-			values = append(values, Value{Type: attribute.Value.Type, Data: slices.Clone(attribute.Value.Data)})
+	for entityID, valueID := range columns[keyID] {
+		if candidate[entityID] && valueID != 0 {
+			value := dictionaries[keyID][valueID-1]
+			values = append(values, Value{Type: value.Type, Data: slices.Clone(value.Data)})
 		}
 	}
 	slices.SortFunc(values, compareValue)
@@ -108,21 +116,27 @@ func (r *Reader) Series(ctx context.Context, matchers []Matcher, projection []Ke
 			return nil, err
 		}
 	}
-	entities, err := r.matchingEntities(ctx, matchers)
+	candidate, dictionaries, columns, err := r.candidateIDs(ctx, matchers)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Entity, 0, len(entities))
-	for _, entity := range entities {
-		if projection == nil {
-			result = append(result, cloneEntity(entity))
+	projectedKeys := projection
+	if projectedKeys == nil {
+		projectedKeys = r.keys
+	}
+	result := make([]Entity, 0)
+	for entityID, selected := range candidate {
+		if !selected {
 			continue
 		}
-		attributes := make([]Attribute, 0, len(projection))
-		for _, key := range projection {
-			if attribute, ok := findAttribute(entity.Attributes, key); ok {
-				attributes = append(attributes, cloneAttribute(attribute))
+		attributes := make([]Attribute, 0, len(projectedKeys))
+		for _, key := range projectedKeys {
+			keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey)
+			if !found || columns[keyID][entityID] == 0 {
+				continue
 			}
+			value := dictionaries[keyID][columns[keyID][entityID]-1]
+			attributes = append(attributes, Attribute{Key: key, Value: Value{Type: value.Type, Data: slices.Clone(value.Data)}})
 		}
 		slices.SortFunc(attributes, func(a, b Attribute) int { return compareKey(a.Key, b.Key) })
 		result = append(result, Entity{Attributes: attributes})
@@ -131,49 +145,53 @@ func (r *Reader) Series(ctx context.Context, matchers []Matcher, projection []Ke
 	return compactEntities(result), nil
 }
 
-func (r *Reader) matchingEntities(ctx context.Context, matchers []Matcher) ([]Entity, error) {
+// candidateIDs evaluates all predicates from postings. The returned columns
+// are used directly for metadata materialization, avoiding entity-page reads.
+func (r *Reader) candidateIDs(ctx context.Context, matchers []Matcher) ([]bool, [][]Value, [][]uint32, error) {
 	compiled := make([]*regexp.Regexp, len(matchers))
 	for i := range matchers {
 		if err := matchers[i].valid(); err != nil {
-			return nil, fmt.Errorf("invalid matcher %d: %w", i, err)
+			return nil, nil, nil, fmt.Errorf("invalid matcher %d: %w", i, err)
 		}
 		if matchers[i].Operator == MatchRegexp || matchers[i].Operator == MatchNotRegexp {
 			compiled[i], _ = regexp.Compile("^(?:" + matchers[i].Regexp + ")$")
 		}
 	}
-	entities, err := r.Entities(ctx)
+	columns, err := r.ForwardColumns(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	// Keep full entity decoding as the correctness reference while the forward
-	// column page is pending. Candidate construction itself uses persisted
-	// postings, so adding that page only changes materialization, not matcher
-	// semantics.
 	dictionaries, err := r.Dictionaries(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	postings, err := r.Postings(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	candidate := make([]bool, len(entities))
+	entityCount := 0
+	if len(columns) > 0 {
+		entityCount = len(columns[0])
+	} else {
+		// An entity set with no attributes is uncommon, but preserving it avoids
+		// treating an empty scoped directory as an empty entity universe.
+		entities, err := r.Entities(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		entityCount = len(entities)
+	}
+	candidate := make([]bool, entityCount)
 	for i := range candidate {
 		candidate[i] = true
 	}
 	for i, matcher := range matchers {
-		matcherCandidate := postingCandidate(len(entities), r.keys, dictionaries, postings, matcher, compiled[i])
+		matcherCandidate := postingCandidate(entityCount, r.keys, dictionaries, postings, matcher, compiled[i])
 		for entityID := range candidate {
 			candidate[entityID] = candidate[entityID] && matcherCandidate[entityID]
 		}
 	}
-	result := entities[:0]
-	for entityID, entity := range entities {
-		if candidate[entityID] {
-			result = append(result, entity)
-		}
-	}
-	return result, nil
+	return candidate, dictionaries, columns, nil
 }
 
 func postingCandidate(entityCount int, keys []Key, dictionaries [][]Value, postings [][][]uint32, matcher Matcher, re *regexp.Regexp) []bool {
