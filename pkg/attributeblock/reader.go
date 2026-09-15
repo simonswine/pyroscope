@@ -34,6 +34,7 @@ type Reader struct {
 	hasPostings     bool
 	columns         [][]uint32
 	hasColumns      bool
+	closed          bool
 }
 
 // Open reads only the fixed header, footer, and root directory. It does not
@@ -85,12 +86,36 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
 
+// Close releases all decoded query-lifetime pages. It does not close the
+// RangeSource, whose lifetime belongs to the caller. Close is idempotent.
+func (r *Reader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entities, r.hasEntities = nil, false
+	r.dictionaries, r.hasDictionaries = nil, false
+	r.postings, r.hasPostings = nil, false
+	r.columns, r.hasColumns = nil, false
+	r.closed = true
+	return nil
+}
+
+func (r *Reader) ensureOpen() error {
+	if r.closed {
+		return fmt.Errorf("attribute block reader is closed")
+	}
+	return nil
+}
+
 // Keys returns the scoped attribute-name directory without fetching data pages.
 func (r *Reader) Keys() []Key { return slices.Clone(r.keys) }
 
 // Entities fetches and validates the entity page.
 func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if r.hasEntities {
 		entities := cloneEntities(r.entities)
 		r.mu.Unlock()
@@ -110,6 +135,10 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 		return nil, fmt.Errorf("decoding entity page: %w", err)
 	}
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if !r.hasEntities {
 		r.entities, r.hasEntities = entities, true
 	}
@@ -122,6 +151,10 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 // are aligned with Keys.
 func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if r.hasDictionaries {
 		values := cloneDictionaries(r.dictionaries)
 		r.mu.Unlock()
@@ -141,6 +174,10 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 		return nil, fmt.Errorf("decoding dictionary page: %w", err)
 	}
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if !r.hasDictionaries {
 		r.dictionaries, r.hasDictionaries = values, true
 	}
@@ -153,6 +190,10 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 // zeroth posting for every key is its presence posting.
 func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if r.hasPostings {
 		postings := clonePostings(r.postings)
 		r.mu.Unlock()
@@ -176,6 +217,10 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 		return nil, fmt.Errorf("decoding postings page: %w", err)
 	}
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if !r.hasPostings {
 		r.postings, r.hasPostings = postings, true
 	}
@@ -188,6 +233,10 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 // A zero reference is ABSENT; n refers to Dictionaries()[key][n-1].
 func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if r.hasColumns {
 		columns := cloneColumns(r.columns)
 		r.mu.Unlock()
@@ -211,6 +260,10 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 		return nil, fmt.Errorf("decoding forward column page: %w", err)
 	}
 	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if !r.hasColumns {
 		r.columns, r.hasColumns = columns, true
 	}
