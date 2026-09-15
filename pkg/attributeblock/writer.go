@@ -73,6 +73,7 @@ func (w *Writer) Bytes() ([]byte, error) {
 	object := make([]byte, headerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
+	binary.LittleEndian.PutUint32(object[12:16], uint32(len(w.entities)))
 	pages := make([]pageDescriptor, 0, len(columnPages)+3)
 	appendPage := func(kind pageKind, keyID uint32, data []byte) error {
 		if len(data) > maxPageLen {

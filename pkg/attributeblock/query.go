@@ -169,18 +169,9 @@ func (r *Reader) candidateIDs(ctx context.Context, matchers []Matcher) ([]bool, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	entityCount := 0
-	if len(columns) > 0 {
-		entityCount = len(columns[0])
-	} else {
-		// An entity set with no attributes is uncommon, but preserving it avoids
-		// treating an empty scoped directory as an empty entity universe.
-		entities, err := r.Entities(ctx)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		entityCount = len(entities)
-	}
+	// Use validated entity count from header instead of deriving from columns.
+	// This prevents panics when columns have inconsistent lengths.
+	entityCount := int(r.entityCount)
 	candidate := make([]bool, entityCount)
 	for i := range candidate {
 		candidate[i] = true

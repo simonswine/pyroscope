@@ -18,12 +18,13 @@ type RangeSource interface {
 // Reader owns query-lifetime decoded pages. Returned data is cloned, so callers
 // cannot retain a view into a reader-owned buffer.
 type Reader struct {
-	source   RangeSource
-	object   string
-	size     int64
-	metadata Metadata
-	keys     []Key
-	pages    []pageDescriptor
+	source      RangeSource
+	object      string
+	size        int64
+	entityCount uint32
+	metadata    Metadata
+	keys        []Key
+	pages       []pageDescriptor
 
 	mu              sync.Mutex
 	entities        []Entity
@@ -81,7 +82,14 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 			return nil, fmt.Errorf("page %d lies outside object data", i)
 		}
 	}
-	return &Reader{source: source, object: object, size: size, metadata: metadata, keys: keys, pages: pages}, nil
+	entityCount := binary.LittleEndian.Uint32(header[12:16])
+	if err := validateEntityCountBounds(entityCount); err != nil {
+		return nil, err
+	}
+	if err := validateAllocationBounds(entityCount, len(keys)); err != nil {
+		return nil, err
+	}
+	return &Reader{source: source, object: object, size: size, entityCount: entityCount, metadata: metadata, keys: keys, pages: pages}, nil
 }
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
@@ -216,6 +224,16 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decoding postings page: %w", err)
 	}
+	// Validate postings IDs are within entity bounds
+	for keyIndex, keyPostings := range postings {
+		for postingIndex, posting := range keyPostings {
+			for _, entityID := range posting {
+				if entityID >= r.entityCount {
+					return nil, fmt.Errorf("postings validation failed: key %d posting %d contains entity ID %d exceeding entity count %d", keyIndex, postingIndex, entityID, r.entityCount)
+				}
+			}
+		}
+	}
 	r.mu.Lock()
 	if err := r.ensureOpen(); err != nil {
 		r.mu.Unlock()
@@ -267,6 +285,10 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 			return nil, fmt.Errorf("AttributeBlockV1 is missing forward column %d", i)
 		}
 	}
+	// Validate cross-page consistency before caching
+	if err := validatePageConsistency(r.entityCount, r.keys, dictionaries, nil, columns); err != nil {
+		return nil, fmt.Errorf("forward column validation failed: %w", err)
+	}
 	r.mu.Lock()
 	if err := r.ensureOpen(); err != nil {
 		r.mu.Unlock()
@@ -278,6 +300,37 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	columns = cloneColumns(r.columns)
 	r.mu.Unlock()
 	return columns, nil
+}
+
+// ForwardColumnsFor reads only the requested scoped-key pages. It is the
+// selective counterpart to ForwardColumns; callers receive columns in key order.
+func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32, error) {
+	dictionaries, err := r.Dictionaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]uint32, len(keys))
+	for i, key := range keys {
+		keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey)
+		if !found {
+			continue
+		}
+		for _, page := range r.pages {
+			if page.kind != pageForwardColumn || page.keyID != uint32(keyID) {
+				continue
+			}
+			data, err := r.readPage(ctx, page, "forward column")
+			if err != nil {
+				return nil, err
+			}
+			result[i], err = decodeForwardColumn(data, dictionaries[keyID])
+			if err != nil {
+				return nil, fmt.Errorf("decoding forward column page: %w", err)
+			}
+			break
+		}
+	}
+	return result, nil
 }
 
 func (r *Reader) readPage(ctx context.Context, page pageDescriptor, name string) ([]byte, error) {
