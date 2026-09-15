@@ -28,5 +28,5 @@ func TestReaderSeriesUsesForwardColumnsInsteadOfEntityPage(t *testing.T) {
 	// Open reads header/footer/directory. The query reads dictionary, forward
 	// columns, and postings, but never the entity page; the dictionary is reused
 	// from the reader's query-lifetime cache.
-	require.Equal(t, 6, source.calls)
+	require.Equal(t, 7, source.calls)
 }

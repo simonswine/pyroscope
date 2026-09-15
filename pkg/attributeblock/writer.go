@@ -62,32 +62,42 @@ func (w *Writer) Bytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dictionaryPage := encodeDictionaries(dictionaries)
 	postingsPage, err := encodePostings(keys, dictionaries, w.entities)
 	if err != nil {
 		return nil, err
 	}
-	columnsPage, err := encodeForwardColumns(keys, dictionaries, w.entities)
+	columnPages, err := encodeForwardColumns(keys, dictionaries, w.entities)
 	if err != nil {
 		return nil, err
 	}
-	if len(entityPage) > maxPageLen || len(dictionaryPage) > maxPageLen || len(postingsPage) > maxPageLen || len(columnsPage) > maxPageLen {
-		return nil, fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
-	}
-	object := make([]byte, headerSize, headerSize+len(entityPage)+len(dictionaryPage)+len(postingsPage)+len(columnsPage)+512+footerSize)
+	object := make([]byte, headerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
-	object = append(object, entityPage...)
-	object = append(object, dictionaryPage...)
-	object = append(object, postingsPage...)
-	object = append(object, columnsPage...)
+	pages := make([]pageDescriptor, 0, len(columnPages)+3)
+	appendPage := func(kind pageKind, keyID uint32, data []byte) error {
+		if len(data) > maxPageLen {
+			return fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
+		}
+		pages = append(pages, pageDescriptor{kind: kind, keyID: keyID, offset: int64(len(object)), length: uint32(len(data)), crc32: checksum(data)})
+		object = append(object, data...)
+		return nil
+	}
+	if err := appendPage(pageEntity, ^uint32(0), entityPage); err != nil {
+		return nil, err
+	}
+	if err := appendPage(pageDictionary, ^uint32(0), encodeDictionaries(dictionaries)); err != nil {
+		return nil, err
+	}
+	if err := appendPage(pagePostings, ^uint32(0), postingsPage); err != nil {
+		return nil, err
+	}
+	for i, page := range columnPages {
+		if err := appendPage(pageForwardColumn, uint32(i), page); err != nil {
+			return nil, err
+		}
+	}
 	directoryOffset := int64(len(object))
-	directory := encodeDirectory(w.metadata, keys, []pageDescriptor{
-		{kind: pageEntity, offset: headerSize, length: uint32(len(entityPage)), crc32: checksum(entityPage)},
-		{kind: pageDictionary, offset: headerSize + int64(len(entityPage)), length: uint32(len(dictionaryPage)), crc32: checksum(dictionaryPage)},
-		{kind: pagePostings, offset: headerSize + int64(len(entityPage)+len(dictionaryPage)), length: uint32(len(postingsPage)), crc32: checksum(postingsPage)},
-		{kind: pageForwardColumn, offset: headerSize + int64(len(entityPage)+len(dictionaryPage)+len(postingsPage)), length: uint32(len(columnsPage)), crc32: checksum(columnsPage)},
-	})
+	directory := encodeDirectory(w.metadata, keys, pages)
 	object = append(object, directory...)
 	var footer [footerSize]byte
 	copy(footer[:8], footerMagic[:])
@@ -95,8 +105,7 @@ func (w *Writer) Bytes() ([]byte, error) {
 	binary.LittleEndian.PutUint64(footer[12:20], uint64(directoryOffset))
 	binary.LittleEndian.PutUint32(footer[20:24], uint32(len(directory)))
 	binary.LittleEndian.PutUint32(footer[24:28], checksum(directory))
-	object = append(object, footer[:]...)
-	return object, nil
+	return append(object, footer[:]...), nil
 }
 
 func (w *Writer) keys() []Key {
@@ -183,24 +192,45 @@ func appendPosting(b []byte, posting []uint32) []byte {
 
 // encodeForwardColumns stores a dictionary-local value ID for every key and
 // entity. Zero is ABSENT; nonzero IDs are the dictionary index plus one.
-func encodeForwardColumns(keys []Key, dictionaries [][]Value, entities []Entity) ([]byte, error) {
-	b := appendUvarint(nil, uint64(len(entities)))
-	b = appendUvarint(b, uint64(len(keys)))
+func encodeForwardColumns(keys []Key, dictionaries [][]Value, entities []Entity) ([][]byte, error) {
+	pages := make([][]byte, len(keys))
 	for keyIndex, key := range keys {
+		page := appendUvarint(nil, uint64(len(entities)))
 		for _, entity := range entities {
 			attribute, found := findAttribute(entity.Attributes, key)
 			if !found {
-				b = appendUvarint(b, 0)
+				page = appendUvarint(page, 0)
 				continue
 			}
 			valueID, found := slices.BinarySearchFunc(dictionaries[keyIndex], attribute.Value, compareValue)
 			if !found {
 				return nil, fmt.Errorf("attribute value missing from dictionary")
 			}
-			b = appendUvarint(b, uint64(valueID+1))
+			page = appendUvarint(page, uint64(valueID+1))
 		}
+		pages[keyIndex] = page
 	}
-	return b, nil
+	return pages, nil
+}
+
+func decodeForwardColumn(page []byte, dictionary []Value) ([]uint32, error) {
+	r := bytes.NewReader(page)
+	entityCount, err := readUvarint(r)
+	if err != nil || entityCount > 1<<32-1 {
+		return nil, fmt.Errorf("invalid forward column entity count %d", entityCount)
+	}
+	column := make([]uint32, entityCount)
+	for i := range column {
+		valueID, err := readUvarint(r)
+		if err != nil || valueID > uint64(len(dictionary)) {
+			return nil, fmt.Errorf("invalid forward value ID for entity %d", i)
+		}
+		column[i] = uint32(valueID)
+	}
+	if _, err := r.ReadByte(); err != io.EOF {
+		return nil, fmt.Errorf("trailing forward column page bytes")
+	}
+	return column, nil
 }
 
 func decodeForwardColumns(page []byte, dictionaries [][]Value) ([][]uint32, error) {

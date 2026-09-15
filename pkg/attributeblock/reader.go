@@ -247,17 +247,25 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	if err != nil {
 		return nil, err
 	}
-	page, ok := r.page(pageForwardColumn)
-	if !ok {
-		return nil, fmt.Errorf("AttributeBlockV1 is missing its forward column page")
+	columns := make([][]uint32, len(r.keys))
+	for _, page := range r.pages {
+		if page.kind != pageForwardColumn || page.keyID >= uint32(len(columns)) {
+			continue
+		}
+		data, err := r.readPage(ctx, page, "forward column")
+		if err != nil {
+			return nil, err
+		}
+		column, err := decodeForwardColumn(data, dictionaries[page.keyID])
+		if err != nil {
+			return nil, fmt.Errorf("decoding forward column page: %w", err)
+		}
+		columns[page.keyID] = column
 	}
-	data, err := r.readPage(ctx, page, "forward column")
-	if err != nil {
-		return nil, err
-	}
-	columns, err := decodeForwardColumns(data, dictionaries)
-	if err != nil {
-		return nil, fmt.Errorf("decoding forward column page: %w", err)
+	for i := range columns {
+		if columns[i] == nil {
+			return nil, fmt.Errorf("AttributeBlockV1 is missing forward column %d", i)
+		}
 	}
 	r.mu.Lock()
 	if err := r.ensureOpen(); err != nil {

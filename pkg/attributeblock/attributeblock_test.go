@@ -81,7 +81,7 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 			{Key: Key{Scope: ScopeResource, Name: "payload"}, Value: BytesValue([]byte{0, 1, 2})},
 		}},
 	}, entities)
-	require.Equal(t, 7, source.calls)
+	require.Equal(t, 10, source.calls)
 }
 
 func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
