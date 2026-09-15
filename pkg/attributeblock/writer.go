@@ -65,7 +65,7 @@ func (w *Writer) Bytes() ([]byte, error) {
 	binary.LittleEndian.PutUint16(object[8:10], Version)
 	object = append(object, page...)
 	directoryOffset := int64(len(object))
-	directory := encodeDirectory(w.metadata, pageDescriptor{offset: headerSize, length: uint32(len(page)), crc32: checksum(page)})
+	directory := encodeDirectory(w.metadata, w.keys(), pageDescriptor{offset: headerSize, length: uint32(len(page)), crc32: checksum(page)})
 	object = append(object, directory...)
 	var footer [footerSize]byte
 	copy(footer[:8], footerMagic[:])
@@ -75,6 +75,17 @@ func (w *Writer) Bytes() ([]byte, error) {
 	binary.LittleEndian.PutUint32(footer[24:28], checksum(directory))
 	object = append(object, footer[:]...)
 	return object, nil
+}
+
+func (w *Writer) keys() []Key {
+	keys := make([]Key, 0)
+	for _, entity := range w.entities {
+		for _, attribute := range entity.Attributes {
+			keys = append(keys, attribute.Key)
+		}
+	}
+	slices.SortFunc(keys, compareKey)
+	return compactKeys(keys)
 }
 
 func encodeEntities(entities []Entity) ([]byte, error) {

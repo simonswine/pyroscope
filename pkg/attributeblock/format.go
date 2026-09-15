@@ -69,11 +69,18 @@ func readString(r *bytes.Reader, limit int) (string, error) {
 	return string(value), nil
 }
 
-func encodeDirectory(metadata Metadata, page pageDescriptor) []byte {
+func encodeDirectory(metadata Metadata, keys []Key, page pageDescriptor) []byte {
 	b := make([]byte, 0, 64+len(metadata.Tenant)+len(metadata.EntityKind))
 	b = append(b, byte(metadata.TimeSemantics))
 	b = appendString(b, metadata.Tenant)
 	b = appendString(b, metadata.EntityKind)
+	// The scoped name directory is deliberately ahead of data pages. It is
+	// sufficient for unfiltered full-coverage name discovery.
+	b = appendUvarint(b, uint64(len(keys)))
+	for _, key := range keys {
+		b = append(b, byte(key.Scope))
+		b = appendString(b, key.Name)
+	}
 	b = appendUvarint(b, 1) // V1 has a single entity page; later versions page row groups.
 	var fixed [16]byte
 	binary.LittleEndian.PutUint64(fixed[0:8], uint64(page.offset))
@@ -82,43 +89,62 @@ func encodeDirectory(metadata Metadata, page pageDescriptor) []byte {
 	return append(b, fixed[:]...)
 }
 
-func decodeDirectory(b []byte) (Metadata, []pageDescriptor, error) {
+func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
 	r := bytes.NewReader(b)
 	semantics, err := r.ReadByte()
 	if err != nil {
-		return Metadata{}, nil, fmt.Errorf("reading directory time semantics: %w", err)
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory time semantics: %w", err)
 	}
 	tenant, err := readString(r, 1<<20)
 	if err != nil {
-		return Metadata{}, nil, fmt.Errorf("reading directory tenant: %w", err)
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory tenant: %w", err)
 	}
 	kind, err := readString(r, 1024)
 	if err != nil {
-		return Metadata{}, nil, fmt.Errorf("reading directory entity kind: %w", err)
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory entity kind: %w", err)
+	}
+	keyCount, err := readUvarint(r)
+	if err != nil || keyCount > 1<<20 {
+		return Metadata{}, nil, nil, fmt.Errorf("invalid attribute key count %d", keyCount)
+	}
+	keys := make([]Key, keyCount)
+	for i := range keys {
+		scope, err := r.ReadByte()
+		if err != nil {
+			return Metadata{}, nil, nil, fmt.Errorf("reading attribute key %d scope: %w", i, err)
+		}
+		name, err := readString(r, 1<<20)
+		if err != nil {
+			return Metadata{}, nil, nil, fmt.Errorf("reading attribute key %d name: %w", i, err)
+		}
+		keys[i] = Key{Scope: Scope(scope), Name: name}
+		if err := keys[i].valid(); err != nil || (i > 0 && compareKey(keys[i-1], keys[i]) >= 0) {
+			return Metadata{}, nil, nil, fmt.Errorf("invalid attribute key %d", i)
+		}
 	}
 	count, err := readUvarint(r)
 	if err != nil || count == 0 || count > 1<<20 {
-		return Metadata{}, nil, fmt.Errorf("invalid page count %d", count)
+		return Metadata{}, nil, nil, fmt.Errorf("invalid page count %d", count)
 	}
 	pages := make([]pageDescriptor, count)
 	for i := range pages {
 		var fixed [16]byte
 		if _, err := io.ReadFull(r, fixed[:]); err != nil {
-			return Metadata{}, nil, fmt.Errorf("reading page descriptor: %w", err)
+			return Metadata{}, nil, nil, fmt.Errorf("reading page descriptor: %w", err)
 		}
 		pages[i] = pageDescriptor{offset: int64(binary.LittleEndian.Uint64(fixed[0:8])), length: binary.LittleEndian.Uint32(fixed[8:12]), crc32: binary.LittleEndian.Uint32(fixed[12:16])}
 		if pages[i].offset < headerSize || pages[i].length > maxPageLen {
-			return Metadata{}, nil, fmt.Errorf("invalid page descriptor %d", i)
+			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
 		}
 	}
 	if r.Len() != 0 {
-		return Metadata{}, nil, fmt.Errorf("trailing directory bytes")
+		return Metadata{}, nil, nil, fmt.Errorf("trailing directory bytes")
 	}
 	metadata := Metadata{Tenant: tenant, EntityKind: kind, TimeSemantics: TimeSemantics(semantics)}
 	if err := metadata.valid(); err != nil {
-		return Metadata{}, nil, err
+		return Metadata{}, nil, nil, err
 	}
-	return metadata, pages, nil
+	return metadata, keys, pages, nil
 }
 
 func checksum(b []byte) uint32 { return crc32.ChecksumIEEE(b) }

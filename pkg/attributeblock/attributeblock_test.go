@@ -42,6 +42,15 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage}, reader.Metadata())
 	require.Equal(t, 3, source.calls, "open must not fetch the entity page")
+	keys, err := reader.Names(context.Background(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []Key{
+		{Scope: ScopeLegacy, Name: "service.name"},
+		{Scope: ScopeResource, Name: "build"},
+		{Scope: ScopeResource, Name: "enabled"},
+		{Scope: ScopeResource, Name: "payload"},
+	}, keys)
+	require.Equal(t, 3, source.calls, "unfiltered names must use the scoped directory")
 
 	entities, err := reader.Entities(context.Background())
 	require.NoError(t, err)

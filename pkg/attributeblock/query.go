@@ -51,6 +51,9 @@ func (m Matcher) valid() error {
 
 // Names returns keys present on at least one entity satisfying all matchers.
 func (r *Reader) Names(ctx context.Context, matchers []Matcher) ([]Key, error) {
+	if len(matchers) == 0 {
+		return r.Keys(), nil
+	}
 	entities, err := r.matchingEntities(ctx, matchers)
 	if err != nil {
 		return nil, err

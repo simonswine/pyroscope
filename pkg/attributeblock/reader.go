@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"slices"
 )
 
 // RangeSource is satisfied by objstore.BucketReader. It is kept small so the
@@ -20,6 +21,7 @@ type Reader struct {
 	object   string
 	size     int64
 	metadata Metadata
+	keys     []Key
 	pages    []pageDescriptor
 }
 
@@ -58,7 +60,7 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	if checksum(directory) != binary.LittleEndian.Uint32(footer[24:28]) {
 		return nil, fmt.Errorf("root directory checksum mismatch")
 	}
-	metadata, pages, err := decodeDirectory(directory)
+	metadata, keys, pages, err := decodeDirectory(directory)
 	if err != nil {
 		return nil, fmt.Errorf("decoding root directory: %w", err)
 	}
@@ -67,10 +69,13 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 			return nil, fmt.Errorf("page %d lies outside object data", i)
 		}
 	}
-	return &Reader{source: source, object: object, size: size, metadata: metadata, pages: pages}, nil
+	return &Reader{source: source, object: object, size: size, metadata: metadata, keys: keys, pages: pages}, nil
 }
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
+
+// Keys returns the scoped attribute-name directory without fetching data pages.
+func (r *Reader) Keys() []Key { return slices.Clone(r.keys) }
 
 // Entities fetches and validates the entity page. Future readers will select
 // only the column/row-group pages needed by a query through this same path.
