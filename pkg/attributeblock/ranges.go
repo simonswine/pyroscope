@@ -2,8 +2,13 @@ package attributeblock
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 )
 
 // Range is one contiguous object-store request. Page indexes identify the
@@ -36,6 +41,73 @@ func (o RangePlanOptions) valid() error {
 // PlanPageRanges sorts page descriptors by object offset and coalesces nearby
 // pages. It only plans I/O; callers remain responsible for checksum validation
 // of every individual page.
+// FetchOptions bounds planned range execution. MaxBytesInFlight accounts for
+// compressed response buffers; individual ranges must fit within the budget.
+type FetchOptions struct {
+	MaxConcurrent    int
+	MaxBytesInFlight int64
+}
+
+func (o FetchOptions) valid() error {
+	if o.MaxConcurrent <= 0 {
+		return fmt.Errorf("maximum concurrent requests must be positive")
+	}
+	if o.MaxBytesInFlight <= 0 {
+		return fmt.Errorf("maximum bytes in flight must be positive")
+	}
+	return nil
+}
+
+// FetchRanges executes a planned set of ranges under independent request and
+// response-buffer budgets. Returned buffers follow the input order and are
+// owned by the caller.
+func FetchRanges(ctx context.Context, source RangeSource, object string, ranges []Range, options FetchOptions) ([][]byte, error) {
+	if source == nil {
+		return nil, fmt.Errorf("attribute block range source is nil")
+	}
+	if err := options.valid(); err != nil {
+		return nil, err
+	}
+	buffers := make([][]byte, len(ranges))
+	requests := make(chan struct{}, options.MaxConcurrent)
+	bytes := semaphore.NewWeighted(options.MaxBytesInFlight)
+	group, ctx := errgroup.WithContext(ctx)
+	var mu sync.Mutex
+	for i, planned := range ranges {
+		if planned.Length <= 0 || planned.Length > options.MaxBytesInFlight {
+			return nil, fmt.Errorf("range %d length %d exceeds byte budget", i, planned.Length)
+		}
+		if err := bytes.Acquire(ctx, planned.Length); err != nil {
+			return nil, err
+		}
+		select {
+		case requests <- struct{}{}:
+		case <-ctx.Done():
+			bytes.Release(planned.Length)
+			return nil, ctx.Err()
+		}
+		i, planned := i, planned
+		group.Go(func() error {
+			defer func() {
+				<-requests
+				bytes.Release(planned.Length)
+			}()
+			buffer, err := readRange(ctx, source, object, planned.Offset, planned.Length)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			buffers[i] = buffer
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return buffers, nil
+}
+
 func PlanPageRanges(pages []pageDescriptor, options RangePlanOptions) ([]Range, error) {
 	if err := options.valid(); err != nil {
 		return nil, err

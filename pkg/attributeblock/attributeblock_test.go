@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 type memoryRanges struct {
+	mu    sync.Mutex
 	data  []byte
 	calls int
 }
 
 func (m *memoryRanges) GetRange(_ context.Context, _ string, off, length int64) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls++
 	if off < 0 || length < 0 || off+length > int64(len(m.data)) {
 		return nil, io.EOF
