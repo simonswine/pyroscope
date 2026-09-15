@@ -145,6 +145,31 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	return postings, nil
 }
 
+// ForwardColumns returns dictionary-local value references for each scoped key.
+// A zero reference is ABSENT; n refers to Dictionaries()[key][n-1].
+func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
+	dictionaries, err := r.Dictionaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	page, ok := r.page(pageForwardColumn)
+	if !ok {
+		return nil, fmt.Errorf("AttributeBlockV1 is missing its forward column page")
+	}
+	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	if err != nil {
+		return nil, fmt.Errorf("reading forward column page: %w", err)
+	}
+	if checksum(data) != page.crc32 {
+		return nil, fmt.Errorf("forward column page checksum mismatch")
+	}
+	columns, err := decodeForwardColumns(data, dictionaries)
+	if err != nil {
+		return nil, fmt.Errorf("decoding forward column page: %w", err)
+	}
+	return columns, nil
+}
+
 func (r *Reader) page(kind pageKind) (pageDescriptor, bool) {
 	for _, page := range r.pages {
 		if page.kind == kind {

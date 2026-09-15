@@ -60,6 +60,9 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 	require.Equal(t, []uint32{0, 1}, postings[0][0])
 	require.Equal(t, []uint32{1}, postings[0][1])
 	require.Equal(t, []uint32{0}, postings[0][2])
+	columns, err := reader.ForwardColumns(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, [][]uint32{{2, 1}, {1, 0}, {1, 0}, {0, 1}}, columns)
 
 	entities, err := reader.Entities(context.Background())
 	require.NoError(t, err)
@@ -74,7 +77,7 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 			{Key: Key{Scope: ScopeResource, Name: "payload"}, Value: BytesValue([]byte{0, 1, 2})},
 		}},
 	}, entities)
-	require.Equal(t, 7, source.calls)
+	require.Equal(t, 9, source.calls)
 }
 
 func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
