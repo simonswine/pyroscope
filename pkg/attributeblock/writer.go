@@ -53,19 +53,28 @@ func (w *Writer) AddEntity(entity Entity) error {
 // page in this initial primitive; the directory permits row-group paging to be
 // added without changing the footer contract.
 func (w *Writer) Bytes() ([]byte, error) {
-	page, err := encodeEntities(w.entities)
+	entityPage, err := encodeEntities(w.entities)
 	if err != nil {
 		return nil, err
 	}
-	if len(page) > maxPageLen {
-		return nil, fmt.Errorf("entity page is %d bytes, exceeds limit %d", len(page), maxPageLen)
+	keys := w.keys()
+	dictionaryPage, err := encodeDictionaries(keys, w.entities)
+	if err != nil {
+		return nil, err
 	}
-	object := make([]byte, headerSize, headerSize+len(page)+512+footerSize)
+	if len(entityPage) > maxPageLen || len(dictionaryPage) > maxPageLen {
+		return nil, fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
+	}
+	object := make([]byte, headerSize, headerSize+len(entityPage)+len(dictionaryPage)+512+footerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
-	object = append(object, page...)
+	object = append(object, entityPage...)
+	object = append(object, dictionaryPage...)
 	directoryOffset := int64(len(object))
-	directory := encodeDirectory(w.metadata, w.keys(), pageDescriptor{offset: headerSize, length: uint32(len(page)), crc32: checksum(page)})
+	directory := encodeDirectory(w.metadata, keys, []pageDescriptor{
+		{kind: pageEntity, offset: headerSize, length: uint32(len(entityPage)), crc32: checksum(entityPage)},
+		{kind: pageDictionary, offset: headerSize + int64(len(entityPage)), length: uint32(len(dictionaryPage)), crc32: checksum(dictionaryPage)},
+	})
 	object = append(object, directory...)
 	var footer [footerSize]byte
 	copy(footer[:8], footerMagic[:])
@@ -88,6 +97,30 @@ func (w *Writer) keys() []Key {
 	return compactKeys(keys)
 }
 
+func encodeDictionaries(keys []Key, entities []Entity) ([]byte, error) {
+	values := make([][]Value, len(keys))
+	for _, entity := range entities {
+		for _, attribute := range entity.Attributes {
+			i, ok := slices.BinarySearchFunc(keys, attribute.Key, compareKey)
+			if !ok {
+				return nil, fmt.Errorf("attribute key missing from directory")
+			}
+			values[i] = append(values[i], attribute.Value)
+		}
+	}
+	b := appendUvarint(nil, uint64(len(keys)))
+	for _, dictionary := range values {
+		slices.SortFunc(dictionary, compareValue)
+		dictionary = compactValues(dictionary)
+		b = appendUvarint(b, uint64(len(dictionary)))
+		for _, value := range dictionary {
+			b = append(b, byte(value.Type))
+			b = appendBytes(b, value.Data)
+		}
+	}
+	return b, nil
+}
+
 func encodeEntities(entities []Entity) ([]byte, error) {
 	if len(entities) > 1<<32-1 {
 		return nil, fmt.Errorf("entity count %d exceeds uint32 limit", len(entities))
@@ -103,6 +136,40 @@ func encodeEntities(entities []Entity) ([]byte, error) {
 		}
 	}
 	return b, nil
+}
+
+func decodeDictionaries(page []byte, keys []Key) ([][]Value, error) {
+	r := bytes.NewReader(page)
+	keyCount, err := readUvarint(r)
+	if err != nil || keyCount != uint64(len(keys)) {
+		return nil, fmt.Errorf("invalid dictionary key count %d", keyCount)
+	}
+	values := make([][]Value, len(keys))
+	for i := range values {
+		count, err := readUvarint(r)
+		if err != nil || count > 1<<32-1 {
+			return nil, fmt.Errorf("invalid value count for key %d: %d", i, count)
+		}
+		values[i] = make([]Value, count)
+		for j := range values[i] {
+			typ, err := r.ReadByte()
+			if err != nil {
+				return nil, fmt.Errorf("reading dictionary value type: %w", err)
+			}
+			data, err := readBytes(r, maxPageLen)
+			if err != nil {
+				return nil, fmt.Errorf("reading dictionary value: %w", err)
+			}
+			values[i][j] = Value{Type: ValueType(typ), Data: data}
+			if err := values[i][j].valid(); err != nil || (j > 0 && compareValue(values[i][j-1], values[i][j]) >= 0) {
+				return nil, fmt.Errorf("invalid dictionary value for key %d", i)
+			}
+		}
+	}
+	if _, err := r.ReadByte(); err != io.EOF {
+		return nil, fmt.Errorf("trailing dictionary page bytes")
+	}
+	return values, nil
 }
 
 func decodeEntities(page []byte) ([]Entity, error) {

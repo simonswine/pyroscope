@@ -74,6 +74,17 @@ func (r *Reader) Values(ctx context.Context, key Key, matchers []Matcher) ([]Val
 	if err := key.valid(); err != nil {
 		return nil, err
 	}
+	if len(matchers) == 0 {
+		i, found := slices.BinarySearchFunc(r.keys, key, compareKey)
+		if !found {
+			return nil, nil
+		}
+		dictionaries, err := r.Dictionaries(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return cloneValues(dictionaries[i]), nil
+	}
 	entities, err := r.matchingEntities(ctx, matchers)
 	if err != nil {
 		return nil, err
@@ -217,6 +228,14 @@ func compactValues(values []Value) []Value {
 func compactEntities(entities []Entity) []Entity {
 	return slices.CompactFunc(entities, func(a, b Entity) bool { return compareEntity(a, b) == 0 })
 }
+func cloneValues(values []Value) []Value {
+	result := make([]Value, len(values))
+	for i := range values {
+		result[i] = Value{Type: values[i].Type, Data: slices.Clone(values[i].Data)}
+	}
+	return result
+}
+
 func cloneAttribute(a Attribute) Attribute {
 	return Attribute{Key: a.Key, Value: Value{Type: a.Value.Type, Data: slices.Clone(a.Value.Data)}}
 }

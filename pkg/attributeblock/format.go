@@ -19,7 +19,15 @@ const (
 	maxPageLen = 64 << 20
 )
 
+type pageKind uint8
+
+const (
+	pageEntity pageKind = iota + 1
+	pageDictionary
+)
+
 type pageDescriptor struct {
+	kind   pageKind
 	offset int64
 	length uint32
 	crc32  uint32
@@ -69,7 +77,7 @@ func readString(r *bytes.Reader, limit int) (string, error) {
 	return string(value), nil
 }
 
-func encodeDirectory(metadata Metadata, keys []Key, page pageDescriptor) []byte {
+func encodeDirectory(metadata Metadata, keys []Key, pages []pageDescriptor) []byte {
 	b := make([]byte, 0, 64+len(metadata.Tenant)+len(metadata.EntityKind))
 	b = append(b, byte(metadata.TimeSemantics))
 	b = appendString(b, metadata.Tenant)
@@ -81,12 +89,16 @@ func encodeDirectory(metadata Metadata, keys []Key, page pageDescriptor) []byte 
 		b = append(b, byte(key.Scope))
 		b = appendString(b, key.Name)
 	}
-	b = appendUvarint(b, 1) // V1 has a single entity page; later versions page row groups.
-	var fixed [16]byte
-	binary.LittleEndian.PutUint64(fixed[0:8], uint64(page.offset))
-	binary.LittleEndian.PutUint32(fixed[8:12], page.length)
-	binary.LittleEndian.PutUint32(fixed[12:16], page.crc32)
-	return append(b, fixed[:]...)
+	b = appendUvarint(b, uint64(len(pages)))
+	for _, page := range pages {
+		var fixed [24]byte
+		fixed[0] = byte(page.kind)
+		binary.LittleEndian.PutUint64(fixed[8:16], uint64(page.offset))
+		binary.LittleEndian.PutUint32(fixed[16:20], page.length)
+		binary.LittleEndian.PutUint32(fixed[20:24], page.crc32)
+		b = append(b, fixed[:]...)
+	}
+	return b
 }
 
 func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
@@ -128,12 +140,12 @@ func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
 	}
 	pages := make([]pageDescriptor, count)
 	for i := range pages {
-		var fixed [16]byte
+		var fixed [24]byte
 		if _, err := io.ReadFull(r, fixed[:]); err != nil {
 			return Metadata{}, nil, nil, fmt.Errorf("reading page descriptor: %w", err)
 		}
-		pages[i] = pageDescriptor{offset: int64(binary.LittleEndian.Uint64(fixed[0:8])), length: binary.LittleEndian.Uint32(fixed[8:12]), crc32: binary.LittleEndian.Uint32(fixed[12:16])}
-		if pages[i].offset < headerSize || pages[i].length > maxPageLen {
+		pages[i] = pageDescriptor{kind: pageKind(fixed[0]), offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]), crc32: binary.LittleEndian.Uint32(fixed[20:24])}
+		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
 			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
 		}
 	}

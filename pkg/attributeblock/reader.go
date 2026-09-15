@@ -80,10 +80,10 @@ func (r *Reader) Keys() []Key { return slices.Clone(r.keys) }
 // Entities fetches and validates the entity page. Future readers will select
 // only the column/row-group pages needed by a query through this same path.
 func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
-	if len(r.pages) != 1 {
-		return nil, fmt.Errorf("AttributeBlockV1 requires exactly one entity page")
+	page, ok := r.page(pageEntity)
+	if !ok {
+		return nil, fmt.Errorf("AttributeBlockV1 is missing its entity page")
 	}
-	page := r.pages[0]
 	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
 	if err != nil {
 		return nil, fmt.Errorf("reading entity page: %w", err)
@@ -96,6 +96,36 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 		return nil, fmt.Errorf("decoding entity page: %w", err)
 	}
 	return entities, nil
+}
+
+// Dictionaries fetches the typed value dictionaries independently of entity
+// data. Dictionaries are aligned with Keys.
+func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
+	page, ok := r.page(pageDictionary)
+	if !ok {
+		return nil, fmt.Errorf("AttributeBlockV1 is missing its dictionary page")
+	}
+	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	if err != nil {
+		return nil, fmt.Errorf("reading dictionary page: %w", err)
+	}
+	if checksum(data) != page.crc32 {
+		return nil, fmt.Errorf("dictionary page checksum mismatch")
+	}
+	values, err := decodeDictionaries(data, r.keys)
+	if err != nil {
+		return nil, fmt.Errorf("decoding dictionary page: %w", err)
+	}
+	return values, nil
+}
+
+func (r *Reader) page(kind pageKind) (pageDescriptor, bool) {
+	for _, page := range r.pages {
+		if page.kind == kind {
+			return page, true
+		}
+	}
+	return pageDescriptor{}, false
 }
 
 func readRange(ctx context.Context, source RangeSource, object string, off, length int64) ([]byte, error) {

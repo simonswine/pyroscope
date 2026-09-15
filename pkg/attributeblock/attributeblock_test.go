@@ -51,6 +51,10 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 		{Scope: ScopeResource, Name: "payload"},
 	}, keys)
 	require.Equal(t, 3, source.calls, "unfiltered names must use the scoped directory")
+	values, err := reader.Values(context.Background(), Key{Scope: ScopeLegacy, Name: "service.name"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []Value{StringValue(""), StringValue("api")}, values)
+	require.Equal(t, 4, source.calls, "unfiltered values must use the dictionary page")
 
 	entities, err := reader.Entities(context.Background())
 	require.NoError(t, err)
@@ -65,7 +69,7 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 			{Key: Key{Scope: ScopeResource, Name: "payload"}, Value: BytesValue([]byte{0, 1, 2})},
 		}},
 	}, entities)
-	require.Equal(t, 4, source.calls)
+	require.Equal(t, 5, source.calls)
 }
 
 func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
