@@ -26,7 +26,7 @@ func TestReaderSeriesUsesForwardColumnsInsteadOfEntityPage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []Entity{{Attributes: []Attribute{{Key: Key{Scope: ScopeLegacy, Name: "version"}, Value: StringValue("v1")}}}}, series)
 	// Open reads header/footer/directory. The query reads dictionary, forward
-	// columns, and postings (which currently re-reads dictionaries), but never
-	// the entity page.
-	require.Equal(t, 8, source.calls)
+	// columns, and postings, but never the entity page; the dictionary is reused
+	// from the reader's query-lifetime cache.
+	require.Equal(t, 6, source.calls)
 }

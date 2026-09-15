@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 )
 
 // RangeSource is satisfied by objstore.BucketReader. It is kept small so the
@@ -14,8 +15,8 @@ type RangeSource interface {
 	GetRange(ctx context.Context, name string, off, length int64) (io.ReadCloser, error)
 }
 
-// Reader owns query-lifetime page buffers. Its returned entities own their
-// value bytes, so Close may be called immediately after Entities returns.
+// Reader owns query-lifetime decoded pages. Returned data is cloned, so callers
+// cannot retain a view into a reader-owned buffer.
 type Reader struct {
 	source   RangeSource
 	object   string
@@ -23,6 +24,16 @@ type Reader struct {
 	metadata Metadata
 	keys     []Key
 	pages    []pageDescriptor
+
+	mu              sync.Mutex
+	entities        []Entity
+	hasEntities     bool
+	dictionaries    [][]Value
+	hasDictionaries bool
+	postings        [][][]uint32
+	hasPostings     bool
+	columns         [][]uint32
+	hasColumns      bool
 }
 
 // Open reads only the fixed header, footer, and root directory. It does not
@@ -77,52 +88,77 @@ func (r *Reader) Metadata() Metadata { return r.metadata }
 // Keys returns the scoped attribute-name directory without fetching data pages.
 func (r *Reader) Keys() []Key { return slices.Clone(r.keys) }
 
-// Entities fetches and validates the entity page. Future readers will select
-// only the column/row-group pages needed by a query through this same path.
+// Entities fetches and validates the entity page.
 func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
+	r.mu.Lock()
+	if r.hasEntities {
+		entities := cloneEntities(r.entities)
+		r.mu.Unlock()
+		return entities, nil
+	}
+	r.mu.Unlock()
 	page, ok := r.page(pageEntity)
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its entity page")
 	}
-	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	data, err := r.readPage(ctx, page, "entity")
 	if err != nil {
-		return nil, fmt.Errorf("reading entity page: %w", err)
-	}
-	if checksum(data) != page.crc32 {
-		return nil, fmt.Errorf("entity page checksum mismatch")
+		return nil, err
 	}
 	entities, err := decodeEntities(data)
 	if err != nil {
 		return nil, fmt.Errorf("decoding entity page: %w", err)
 	}
+	r.mu.Lock()
+	if !r.hasEntities {
+		r.entities, r.hasEntities = entities, true
+	}
+	entities = cloneEntities(r.entities)
+	r.mu.Unlock()
 	return entities, nil
 }
 
-// Dictionaries fetches the typed value dictionaries independently of entity
-// data. Dictionaries are aligned with Keys.
+// Dictionaries fetches typed values independently of entity data. Dictionaries
+// are aligned with Keys.
 func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
+	r.mu.Lock()
+	if r.hasDictionaries {
+		values := cloneDictionaries(r.dictionaries)
+		r.mu.Unlock()
+		return values, nil
+	}
+	r.mu.Unlock()
 	page, ok := r.page(pageDictionary)
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its dictionary page")
 	}
-	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	data, err := r.readPage(ctx, page, "dictionary")
 	if err != nil {
-		return nil, fmt.Errorf("reading dictionary page: %w", err)
-	}
-	if checksum(data) != page.crc32 {
-		return nil, fmt.Errorf("dictionary page checksum mismatch")
+		return nil, err
 	}
 	values, err := decodeDictionaries(data, r.keys)
 	if err != nil {
 		return nil, fmt.Errorf("decoding dictionary page: %w", err)
 	}
+	r.mu.Lock()
+	if !r.hasDictionaries {
+		r.dictionaries, r.hasDictionaries = values, true
+	}
+	values = cloneDictionaries(r.dictionaries)
+	r.mu.Unlock()
 	return values, nil
 }
 
 // Postings returns per-key postings aligned with Keys and Dictionaries. The
-// zeroth posting for every key is its presence posting; following postings are
-// aligned with that key's sorted value dictionary.
+// zeroth posting for every key is its presence posting.
 func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
+	r.mu.Lock()
+	if r.hasPostings {
+		postings := clonePostings(r.postings)
+		r.mu.Unlock()
+		return postings, nil
+	}
+	r.mu.Unlock()
 	dictionaries, err := r.Dictionaries(ctx)
 	if err != nil {
 		return nil, err
@@ -131,23 +167,33 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its postings page")
 	}
-	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	data, err := r.readPage(ctx, page, "postings")
 	if err != nil {
-		return nil, fmt.Errorf("reading postings page: %w", err)
-	}
-	if checksum(data) != page.crc32 {
-		return nil, fmt.Errorf("postings page checksum mismatch")
+		return nil, err
 	}
 	postings, err := decodePostings(data, dictionaries)
 	if err != nil {
 		return nil, fmt.Errorf("decoding postings page: %w", err)
 	}
+	r.mu.Lock()
+	if !r.hasPostings {
+		r.postings, r.hasPostings = postings, true
+	}
+	postings = clonePostings(r.postings)
+	r.mu.Unlock()
 	return postings, nil
 }
 
 // ForwardColumns returns dictionary-local value references for each scoped key.
 // A zero reference is ABSENT; n refers to Dictionaries()[key][n-1].
 func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
+	r.mu.Lock()
+	if r.hasColumns {
+		columns := cloneColumns(r.columns)
+		r.mu.Unlock()
+		return columns, nil
+	}
+	r.mu.Unlock()
 	dictionaries, err := r.Dictionaries(ctx)
 	if err != nil {
 		return nil, err
@@ -156,18 +202,64 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its forward column page")
 	}
-	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	data, err := r.readPage(ctx, page, "forward column")
 	if err != nil {
-		return nil, fmt.Errorf("reading forward column page: %w", err)
-	}
-	if checksum(data) != page.crc32 {
-		return nil, fmt.Errorf("forward column page checksum mismatch")
+		return nil, err
 	}
 	columns, err := decodeForwardColumns(data, dictionaries)
 	if err != nil {
 		return nil, fmt.Errorf("decoding forward column page: %w", err)
 	}
+	r.mu.Lock()
+	if !r.hasColumns {
+		r.columns, r.hasColumns = columns, true
+	}
+	columns = cloneColumns(r.columns)
+	r.mu.Unlock()
 	return columns, nil
+}
+
+func (r *Reader) readPage(ctx context.Context, page pageDescriptor, name string) ([]byte, error) {
+	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s page: %w", name, err)
+	}
+	if checksum(data) != page.crc32 {
+		return nil, fmt.Errorf("%s page checksum mismatch", name)
+	}
+	return data, nil
+}
+
+func cloneEntities(entities []Entity) []Entity {
+	result := make([]Entity, len(entities))
+	for i := range entities {
+		result[i] = cloneEntity(entities[i])
+	}
+	return result
+}
+func cloneDictionaries(dictionaries [][]Value) [][]Value {
+	result := make([][]Value, len(dictionaries))
+	for i := range dictionaries {
+		result[i] = cloneValues(dictionaries[i])
+	}
+	return result
+}
+func clonePostings(postings [][][]uint32) [][][]uint32 {
+	result := make([][][]uint32, len(postings))
+	for i := range postings {
+		result[i] = make([][]uint32, len(postings[i]))
+		for j := range postings[i] {
+			result[i][j] = slices.Clone(postings[i][j])
+		}
+	}
+	return result
+}
+func cloneColumns(columns [][]uint32) [][]uint32 {
+	result := make([][]uint32, len(columns))
+	for i := range columns {
+		result[i] = slices.Clone(columns[i])
+	}
+	return result
 }
 
 func (r *Reader) page(kind pageKind) (pageDescriptor, bool) {
