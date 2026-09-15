@@ -39,22 +39,28 @@
 ## Implementation Priority (from plan)
 
 ### Phase A: Correctness First (THIS WEEK)
-1. ✅ Add entity count to header (unstaged)
-2. ✅ Add ForwardColumnsFor method (unstaged)
-3. 🔄 Define format revision/feature policy
-4. 🔄 Add bounds checking: root bytes, counts, decoded allocation
-5. 🔄 Reject inconsistent columns, out-of-universe postings
-6. 🔄 Add cross-page validation
-7. 🔄 Add permanent regression tests for panics
-8. 🔄 Start Format1 parity harness (legacy differential testing)
+1. ✅ Add entity count to header (committed ac5639c2c)
+2. ✅ Add ForwardColumnsFor method (committed ac5639c2c)
+3. ✅ Add bounds checking: entity count, allocation estimates (committed ac5639c2c)
+4. ✅ Reject inconsistent columns, out-of-universe postings (committed ac5639c2c)
+5. ✅ Add cross-page validation (committed ac5639c2c)
+6. ✅ Add permanent regression tests for panics (committed ac5639c2c)
+7. ✅ Use validated header entity count in queries (committed ac5639c2c)
+8. 🔄 Define format revision/feature policy
+9. 🔄 Start Format1 parity harness (legacy differential testing)
+10. 🔄 Add entity deduplication before ID assignment
+11. 🔄 Reject sample scope on series-only indexes
 
 ### Phase B: Selective Query Work (NEXT)
-1. Make candidateIDs use validated entity count instead of column length
-2. Use presence postings for filtered names
-3. Read only target columns for filtered values
-4. Read only projected columns for series
-5. Wire ForwardColumnsFor into query path
-6. Add byte/range-recording tests
+1. ✅ Make candidateIDs use validated entity count instead of column length (ac5639c2c)
+2. ✅ Create candidateIDsSelective that uses ForwardColumnsFor
+3. ✅ Read only target columns for filtered values
+4. ✅ Read only projected columns for series
+5. ✅ Wire ForwardColumnsFor into query path (Series, Values, Names)
+6. ✅ Add validation to ForwardColumnsFor for entity count consistency
+7. ✅ Add range-tracking tests to verify selective fetching
+8. 🔄 Optimize presence queries (use postings without columns when possible)
+9. 🔄 Consider per-key dictionary/postings split (requires format change)
 
 ### Phase C: Bounded Reader Execution (AFTER B)
 1. Fix worker cleanup and request limits
@@ -75,10 +81,46 @@
 
 ## Work Log
 
-### 2025-01-XX - Initial Assessment
+### 2025-01-15 - Initial Assessment
 - Reviewed current implementation
 - Identified 5 main issue categories
 - Unstaged changes: entity count + ForwardColumnsFor
 - All tests passing, 75.4% coverage
 - Starting Phase A correctness work
+
+### 2025-01-15 - Phase A: Validation and Bounds (commit ac5639c2c)
+- ✅ Committed entity count in header (offset 12-16)
+- ✅ Committed ForwardColumnsFor() selective reader
+- ✅ Implemented cross-page validation (validation.go)
+- ✅ Added bounds checking: maxEntityCount=256M, allocation estimates
+- ✅ Queries use validated header entity count, not column length
+- ✅ Added 5 regression tests for malformed blocks
+- All tests pass with -race, coverage 75.6%
+- **Issue 1 (malformed panics) FIXED** ✅
+
+**Remaining Phase A work:**
+- Format revision policy (version bumping, required features)
+- Entity deduplication (currently assigns separate IDs to duplicate content)
+- Reject sample scope on series-only index
+- Legacy differential test harness (Prometheus matcher equivalence)
+
+**Ready to start Phase B** (selective queries) while continuing Phase A in parallel
+
+### 2025-01-15 - Phase B: Selective Query Implementation (commit pending)
+- ✅ Implemented candidateIDsSelective() that uses ForwardColumnsFor
+- ✅ Updated Series(), Values(), Names() to use selective path
+- ✅ Only fetches columns needed for matchers + projection
+- ✅ Handles sparse column map (not all keys loaded)
+- ✅ Added validation: ForwardColumnsFor checks entity count consistency
+- ✅ Added 3 tests: TestSelectiveQueryFetchesFewerColumns, VsFullFetch, HandlesMissingKeys
+- Verified: 10-key block with 2-key query fetches 4 pages, not 10+
+- All tests pass with -race, coverage 73.9%
+- **Issue 2 (queries not selective) PARTIALLY FIXED** 🝐
+
+**Limitations:**
+- Dictionaries and postings are still single pages (can't avoid loading all)
+- Phase D will split these by key for full selectivity
+- Presence queries could use postings-only path (no columns)
+
+**Ready to start Phase C** (bounded reader execution)
 

@@ -327,6 +327,10 @@ func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32,
 			if err != nil {
 				return nil, fmt.Errorf("decoding forward column page: %w", err)
 			}
+			// Validate column length matches header entity count
+			if uint32(len(result[i])) != r.entityCount {
+				return nil, fmt.Errorf("forward column for key %d:%s has length %d but header declares entity count %d", keyID, key.Name, len(result[i]), r.entityCount)
+			}
 			break
 		}
 	}

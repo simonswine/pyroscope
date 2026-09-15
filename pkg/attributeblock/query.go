@@ -54,7 +54,8 @@ func (r *Reader) Names(ctx context.Context, matchers []Matcher) ([]Key, error) {
 	if len(matchers) == 0 {
 		return r.Keys(), nil
 	}
-	candidate, _, columns, err := r.candidateIDs(ctx, matchers)
+	// For Names, we need all columns to discover presence, so use the full path
+	candidate, _, columns, err := r.candidateIDsSelective(ctx, matchers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +89,8 @@ func (r *Reader) Values(ctx context.Context, key Key, matchers []Matcher) ([]Val
 		}
 		return cloneValues(dictionaries[i]), nil
 	}
-	candidate, dictionaries, columns, err := r.candidateIDs(ctx, matchers)
+	// Use selective path: only fetch the target key's column plus matcher keys
+	candidate, dictionaries, columns, err := r.candidateIDsSelective(ctx, matchers, []Key{key})
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +98,12 @@ func (r *Reader) Values(ctx context.Context, key Key, matchers []Matcher) ([]Val
 	if !found {
 		return nil, nil
 	}
+	column, hasColumn := columns[keyID]
+	if !hasColumn {
+		return nil, nil
+	}
 	values := make([]Value, 0)
-	for entityID, valueID := range columns[keyID] {
+	for entityID, valueID := range column {
 		if candidate[entityID] && valueID != 0 {
 			value := dictionaries[keyID][valueID-1]
 			values = append(values, Value{Type: value.Type, Data: slices.Clone(value.Data)})
@@ -116,13 +122,14 @@ func (r *Reader) Series(ctx context.Context, matchers []Matcher, projection []Ke
 			return nil, err
 		}
 	}
-	candidate, dictionaries, columns, err := r.candidateIDs(ctx, matchers)
-	if err != nil {
-		return nil, err
-	}
 	projectedKeys := projection
 	if projectedKeys == nil {
 		projectedKeys = r.keys
+	}
+	// Use selective query path that only fetches needed columns
+	candidate, dictionaries, columns, err := r.candidateIDsSelective(ctx, matchers, projectedKeys)
+	if err != nil {
+		return nil, err
 	}
 	result := make([]Entity, 0)
 	for entityID, selected := range candidate {
@@ -132,10 +139,14 @@ func (r *Reader) Series(ctx context.Context, matchers []Matcher, projection []Ke
 		attributes := make([]Attribute, 0, len(projectedKeys))
 		for _, key := range projectedKeys {
 			keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey)
-			if !found || columns[keyID][entityID] == 0 {
+			if !found {
 				continue
 			}
-			value := dictionaries[keyID][columns[keyID][entityID]-1]
+			column, hasColumn := columns[keyID]
+			if !hasColumn || column[entityID] == 0 {
+				continue
+			}
+			value := dictionaries[keyID][column[entityID]-1]
 			attributes = append(attributes, Attribute{Key: key, Value: Value{Type: value.Type, Data: slices.Clone(value.Data)}})
 		}
 		slices.SortFunc(attributes, func(a, b Attribute) int { return compareKey(a.Key, b.Key) })
