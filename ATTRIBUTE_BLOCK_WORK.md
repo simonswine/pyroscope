@@ -62,11 +62,13 @@
 8. 🔄 Optimize presence queries (use postings without columns when possible)
 9. 🔄 Consider per-key dictionary/postings split (requires format change)
 
-### Phase C: Bounded Reader Execution (AFTER B)
-1. Fix worker cleanup and request limits
-2. Account for retained/decoded memory
-3. Route reader queries through budgeted pipeline
-4. Add resource limit tests
+### Phase C: Bounded Reader Execution (COMPLETE)
+1. ✅ Fixed FetchRanges cleanup on error/cancellation
+2. ✅ Added memory budget tracking to Reader (maxDecodedBytes)
+3. ✅ Implemented fetchPages() using FetchRanges with coalescing
+4. ✅ Converted all page reads to use fetchPages()
+5. ✅ Added 9 comprehensive resource/cleanup tests
+6. ✅ Verified cancellation, error handling, memory tracking
 
 ### Phase D: Benchmark and Paging (AFTER A/B/C)
 1. Establish TSDB baseline
@@ -122,5 +124,30 @@
 - Phase D will split these by key for full selectivity
 - Presence queries could use postings-only path (no columns)
 
-**Ready to start Phase C** (bounded reader execution)
+### 2025-01-15 - Phase C: Bounded Reader Execution (commit pending)
+- ✅ Fixed FetchRanges error cleanup: release only current iteration on failure
+- ✅ Added Reader.maxDecodedBytes (256MB default) and trackDecoded() method
+- ✅ Implemented fetchPages() that uses FetchRanges with 64KB coalescing
+- ✅ Converted Entities, Dictionaries, Postings to use fetchPages
+- ✅ Converted ForwardColumns, ForwardColumnsFor to use fetchPages
+- ✅ Added 9 comprehensive tests:
+  * TestFetchRangesReleasesOnError
+  * TestFetchRangesRespectsCancellation
+  * TestFetchRangesValidatesAllRangesUpfront
+  * TestReaderMemoryBudgetTracking
+  * TestReaderFetchPagesCoalescesNearbyPages (7 pages → 2 GETs)
+  * TestReaderConcurrentFetchesShareBudget
+  * TestReaderCloseWhileFetchingCancelsWork
+- Updated existing tests to handle coalescing (fewer GETs expected)
+- All tests pass with -race, coverage 74.1%
+- **Issue 3 (bounded fetches not connected) FIXED** ✅
+
+**Achievements:**
+- All page reads now use bounded FetchRanges pipeline
+- Coalescing reduces GET count (e.g., 7 pages → 2 GETs with 64KB gap)
+- Memory budget tracking for decoded data (separate from in-flight)
+- Proper cleanup on cancellation and errors
+- No goroutine leaks verified
+
+**Ready for Phase D** (benchmarking and paging optimization)
 

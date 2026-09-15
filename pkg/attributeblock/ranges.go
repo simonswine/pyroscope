@@ -68,24 +68,40 @@ func FetchRanges(ctx context.Context, source RangeSource, object string, ranges 
 	if err := options.valid(); err != nil {
 		return nil, err
 	}
+	// Validate all ranges upfront before acquiring any resources
+	for i, r := range ranges {
+		if r.Length <= 0 {
+			return nil, fmt.Errorf("range %d has non-positive length %d", i, r.Length)
+		}
+		if r.Length > options.MaxBytesInFlight {
+			return nil, fmt.Errorf("range %d length %d exceeds budget %d", i, r.Length, options.MaxBytesInFlight)
+		}
+	}
+
 	buffers := make([][]byte, len(ranges))
 	requests := make(chan struct{}, options.MaxConcurrent)
 	bytes := semaphore.NewWeighted(options.MaxBytesInFlight)
 	group, ctx := errgroup.WithContext(ctx)
 	var mu sync.Mutex
+
 	for i, planned := range ranges {
-		if planned.Length <= 0 || planned.Length > options.MaxBytesInFlight {
-			return nil, fmt.Errorf("range %d length %d exceeds byte budget", i, planned.Length)
-		}
 		if err := bytes.Acquire(ctx, planned.Length); err != nil {
+			// Acquisition failed (likely context cancelled).
+			// Previously started goroutines will clean up via their defers.
 			return nil, err
 		}
+
 		select {
 		case requests <- struct{}{}:
+			// Successfully acquired slot, start goroutine
 		case <-ctx.Done():
+			// Failed to acquire request slot due to cancellation.
+			// Release the bytes we just acquired for THIS iteration.
+			// Previously started goroutines will clean up via their defers.
 			bytes.Release(planned.Length)
 			return nil, ctx.Err()
 		}
+
 		i, planned := i, planned
 		group.Go(func() error {
 			defer func() {

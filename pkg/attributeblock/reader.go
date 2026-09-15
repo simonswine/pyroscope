@@ -36,6 +36,10 @@ type Reader struct {
 	columns         [][]uint32
 	hasColumns      bool
 	closed          bool
+
+	// Memory budget tracking for decoded/cached data
+	decodedBytes    int64
+	maxDecodedBytes int64
 }
 
 // Open reads only the fixed header, footer, and root directory. It does not
@@ -89,7 +93,19 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	if err := validateAllocationBounds(entityCount, len(keys)); err != nil {
 		return nil, err
 	}
-	return &Reader{source: source, object: object, size: size, entityCount: entityCount, metadata: metadata, keys: keys, pages: pages}, nil
+	// Default memory budgets: 256MB for decoded/cached data
+	// This is separate from FetchRanges in-flight budget
+	maxDecodedBytes := int64(256 << 20)
+	return &Reader{
+		source:          source,
+		object:          object,
+		size:            size,
+		entityCount:     entityCount,
+		metadata:        metadata,
+		keys:            keys,
+		pages:           pages,
+		maxDecodedBytes: maxDecodedBytes,
+	}, nil
 }
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
@@ -103,6 +119,7 @@ func (r *Reader) Close() error {
 	r.dictionaries, r.hasDictionaries = nil, false
 	r.postings, r.hasPostings = nil, false
 	r.columns, r.hasColumns = nil, false
+	r.decodedBytes = 0
 	r.closed = true
 	return nil
 }
@@ -111,6 +128,17 @@ func (r *Reader) ensureOpen() error {
 	if r.closed {
 		return fmt.Errorf("attribute block reader is closed")
 	}
+	return nil
+}
+
+// trackDecoded accounts for decoded page data against the memory budget.
+// Call with negative bytes to release. Must be called with mu held.
+func (r *Reader) trackDecoded(bytes int64) error {
+	if r.decodedBytes+bytes > r.maxDecodedBytes {
+		return fmt.Errorf("decoded memory %d + %d exceeds budget %d",
+			r.decodedBytes, bytes, r.maxDecodedBytes)
+	}
+	r.decodedBytes += bytes
 	return nil
 }
 
@@ -130,15 +158,15 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 		return entities, nil
 	}
 	r.mu.Unlock()
-	page, ok := r.page(pageEntity)
+	pageIdx, ok := r.pageIndex(pageEntity, ^uint32(0))
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its entity page")
 	}
-	data, err := r.readPage(ctx, page, "entity")
+	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching entity page: %w", err)
 	}
-	entities, err := decodeEntities(data)
+	entities, err := decodeEntities(pageBuffers[0])
 	if err != nil {
 		return nil, fmt.Errorf("decoding entity page: %w", err)
 	}
@@ -169,15 +197,15 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 		return values, nil
 	}
 	r.mu.Unlock()
-	page, ok := r.page(pageDictionary)
+	pageIdx, ok := r.pageIndex(pageDictionary, ^uint32(0))
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its dictionary page")
 	}
-	data, err := r.readPage(ctx, page, "dictionary")
+	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching dictionary page: %w", err)
 	}
-	values, err := decodeDictionaries(data, r.keys)
+	values, err := decodeDictionaries(pageBuffers[0], r.keys)
 	if err != nil {
 		return nil, fmt.Errorf("decoding dictionary page: %w", err)
 	}
@@ -212,15 +240,15 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	if err != nil {
 		return nil, err
 	}
-	page, ok := r.page(pagePostings)
+	pageIdx, ok := r.pageIndex(pagePostings, ^uint32(0))
 	if !ok {
 		return nil, fmt.Errorf("AttributeBlockV1 is missing its postings page")
 	}
-	data, err := r.readPage(ctx, page, "postings")
+	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching postings page: %w", err)
 	}
-	postings, err := decodePostings(data, dictionaries)
+	postings, err := decodePostings(pageBuffers[0], dictionaries)
 	if err != nil {
 		return nil, fmt.Errorf("decoding postings page: %w", err)
 	}
@@ -265,21 +293,35 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Collect all forward column page indices
+	columnPageIndexes := make([]int, 0, len(r.keys))
+	for i, page := range r.pages {
+		if page.kind == pageForwardColumn {
+			columnPageIndexes = append(columnPageIndexes, i)
+		}
+	}
+
+	// Fetch all column pages via bounded pipeline
+	pageBuffers, err := r.fetchPages(ctx, columnPageIndexes)
+	if err != nil {
+		return nil, fmt.Errorf("fetching forward column pages: %w", err)
+	}
+
+	// Decode each column page
 	columns := make([][]uint32, len(r.keys))
-	for _, page := range r.pages {
-		if page.kind != pageForwardColumn || page.keyID >= uint32(len(columns)) {
-			continue
+	for i, pageIdx := range columnPageIndexes {
+		page := r.pages[pageIdx]
+		if page.keyID >= uint32(len(columns)) {
+			return nil, fmt.Errorf("forward column keyID %d exceeds key count %d", page.keyID, len(columns))
 		}
-		data, err := r.readPage(ctx, page, "forward column")
-		if err != nil {
-			return nil, err
-		}
-		column, err := decodeForwardColumn(data, dictionaries[page.keyID])
+		column, err := decodeForwardColumn(pageBuffers[i], dictionaries[page.keyID])
 		if err != nil {
 			return nil, fmt.Errorf("decoding forward column page: %w", err)
 		}
 		columns[page.keyID] = column
 	}
+
+	// Verify all columns are present
 	for i := range columns {
 		if columns[i] == nil {
 			return nil, fmt.Errorf("AttributeBlockV1 is missing forward column %d", i)
@@ -309,34 +351,132 @@ func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32,
 	if err != nil {
 		return nil, err
 	}
-	result := make([][]uint32, len(keys))
+
+	// Map requested keys to their keyIDs and find corresponding page indices
+	type keyMapping struct {
+		resultIdx int
+		keyID     int
+		pageIdx   int
+	}
+	mappings := make([]keyMapping, 0, len(keys))
 	for i, key := range keys {
 		keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey)
 		if !found {
 			continue
 		}
-		for _, page := range r.pages {
-			if page.kind != pageForwardColumn || page.keyID != uint32(keyID) {
-				continue
-			}
-			data, err := r.readPage(ctx, page, "forward column")
-			if err != nil {
-				return nil, err
-			}
-			result[i], err = decodeForwardColumn(data, dictionaries[keyID])
-			if err != nil {
-				return nil, fmt.Errorf("decoding forward column page: %w", err)
-			}
-			// Validate column length matches header entity count
-			if uint32(len(result[i])) != r.entityCount {
-				return nil, fmt.Errorf("forward column for key %d:%s has length %d but header declares entity count %d", keyID, key.Name, len(result[i]), r.entityCount)
-			}
-			break
+		pageIdx, found := r.pageIndex(pageForwardColumn, uint32(keyID))
+		if !found {
+			continue
 		}
+		mappings = append(mappings, keyMapping{resultIdx: i, keyID: keyID, pageIdx: pageIdx})
 	}
+
+	if len(mappings) == 0 {
+		return make([][]uint32, len(keys)), nil
+	}
+
+	// Fetch all needed pages via bounded pipeline
+	pageIndexes := make([]int, len(mappings))
+	for i, m := range mappings {
+		pageIndexes[i] = m.pageIdx
+	}
+	pageBuffers, err := r.fetchPages(ctx, pageIndexes)
+	if err != nil {
+		return nil, fmt.Errorf("fetching forward column pages: %w", err)
+	}
+
+	// Decode and place each column in the result
+	result := make([][]uint32, len(keys))
+	for i, m := range mappings {
+		column, err := decodeForwardColumn(pageBuffers[i], dictionaries[m.keyID])
+		if err != nil {
+			return nil, fmt.Errorf("decoding forward column page: %w", err)
+		}
+		// Validate column length matches header entity count
+		if uint32(len(column)) != r.entityCount {
+			return nil, fmt.Errorf("forward column for key %d:%s has length %d but header declares entity count %d",
+				m.keyID, keys[m.resultIdx].Name, len(column), r.entityCount)
+		}
+		result[m.resultIdx] = column
+	}
+
 	return result, nil
 }
 
+// fetchPages fetches multiple pages using bounded FetchRanges. It plans ranges,
+// executes bounded fetches, and validates checksums. Returned pages are in the
+// same order as pageIndexes.
+func (r *Reader) fetchPages(ctx context.Context, pageIndexes []int) ([][]byte, error) {
+	if len(pageIndexes) == 0 {
+		return nil, nil
+	}
+
+	// Build page descriptors for planning
+	pages := make([]pageDescriptor, len(pageIndexes))
+	for i, idx := range pageIndexes {
+		if idx < 0 || idx >= len(r.pages) {
+			return nil, fmt.Errorf("page index %d out of bounds", idx)
+		}
+		pages[i] = r.pages[idx]
+	}
+
+	// Plan coalesced ranges
+	planOptions := RangePlanOptions{
+		MaxGap:    64 << 10, // Coalesce pages within 64KB gaps
+		MaxLength: 16 << 20, // Max 16MB per coalesced range
+	}
+	ranges, err := PlanPageRanges(pages, planOptions)
+	if err != nil {
+		return nil, fmt.Errorf("planning page ranges: %w", err)
+	}
+
+	// Fetch with bounded concurrency and memory
+	fetchOptions := FetchOptions{
+		MaxConcurrent:    10,
+		MaxBytesInFlight: 64 << 20, // 64MB in-flight budget
+	}
+	rangeBuffers, err := FetchRanges(ctx, r.source, r.object, ranges, fetchOptions)
+	if err != nil {
+		return nil, fmt.Errorf("fetching page ranges: %w", err)
+	}
+
+	// Extract individual pages from coalesced buffers and validate checksums.
+	// Note: range_.PageIndexes contains indices into the `pages` array we passed
+	// to PlanPageRanges (0-based), not indices into r.pages.
+	result := make([][]byte, len(pageIndexes))
+	for rangeIdx, rangeBuffer := range rangeBuffers {
+		range_ := ranges[rangeIdx]
+		for _, localPageIdx := range range_.PageIndexes {
+			// localPageIdx is an index into the pages array we built,
+			// which corresponds to pageIndexes[localPageIdx]
+			if localPageIdx >= len(pageIndexes) {
+				return nil, fmt.Errorf("page index %d out of bounds (have %d pages)", localPageIdx, len(pageIndexes))
+			}
+			originalPageIdx := pageIndexes[localPageIdx]
+			page := r.pages[originalPageIdx]
+
+			// Extract page data from range buffer
+			offsetInRange := page.offset - range_.Offset
+			if offsetInRange < 0 || offsetInRange+int64(page.length) > int64(len(rangeBuffer)) {
+				return nil, fmt.Errorf("page %d offset %d outside range buffer", originalPageIdx, offsetInRange)
+			}
+			pageData := rangeBuffer[offsetInRange : offsetInRange+int64(page.length)]
+
+			// Validate checksum
+			if checksum(pageData) != page.crc32 {
+				return nil, fmt.Errorf("page %d checksum mismatch", originalPageIdx)
+			}
+
+			// Clone page data (caller owns the result)
+			result[localPageIdx] = slices.Clone(pageData)
+		}
+	}
+
+	return result, nil
+}
+
+// readPage is deprecated in favor of fetchPages but kept for backwards compatibility
+// during migration. Direct use should be replaced with fetchPages.
 func (r *Reader) readPage(ctx context.Context, page pageDescriptor, name string) ([]byte, error) {
 	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
 	if err != nil {
@@ -387,6 +527,17 @@ func (r *Reader) page(kind pageKind) (pageDescriptor, bool) {
 		}
 	}
 	return pageDescriptor{}, false
+}
+
+// pageIndex finds the index of a page by kind and optional keyID.
+// Pass ^uint32(0) for keyID to match any key.
+func (r *Reader) pageIndex(kind pageKind, keyID uint32) (int, bool) {
+	for i, page := range r.pages {
+		if page.kind == kind && (keyID == ^uint32(0) || page.keyID == keyID) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func readRange(ctx context.Context, source RangeSource, object string, off, length int64) ([]byte, error) {

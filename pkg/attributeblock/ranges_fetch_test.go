@@ -19,5 +19,5 @@ func TestFetchRanges(t *testing.T) {
 
 func TestFetchRangesRejectsRangeAboveByteBudget(t *testing.T) {
 	_, err := FetchRanges(context.Background(), &memoryRanges{}, ObjectName, []Range{{Length: 9}}, FetchOptions{MaxConcurrent: 1, MaxBytesInFlight: 8})
-	require.ErrorContains(t, err, "exceeds byte budget")
+	require.ErrorContains(t, err, "exceeds budget")
 }
