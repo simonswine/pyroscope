@@ -1,8 +1,8 @@
-# Attribute Block Implementation Progress
+# Attribute Index Implementation Progress
 
 ## Summary
 
-Continuing work on the attribute block implementation assessment. Two major phases completed:
+Continuing work on the attribute index implementation assessment. Two major phases completed:
 **Phase A (Correctness)** and **Phase B (Selective Queries)**. Ready to start Phase C.
 
 ## Commits
@@ -101,17 +101,17 @@ Continuing work on the attribute block implementation assessment. Two major phas
 ## Files Added/Modified
 
 ### Phase A
-- `pkg/attributeblock/validation.go` (new)
-- `pkg/attributeblock/validation_test.go` (new)
-- `pkg/attributeblock/reader.go` (modified)
-- `pkg/attributeblock/writer.go` (modified)
-- `pkg/attributeblock/query.go` (modified)
+- `pkg/attributeindex/validation.go` (new)
+- `pkg/attributeindex/validation_test.go` (new)
+- `pkg/attributeindex/reader.go` (modified)
+- `pkg/attributeindex/writer.go` (modified)
+- `pkg/attributeindex/query.go` (modified)
 
 ### Phase B
-- `pkg/attributeblock/query_selective.go` (new)
-- `pkg/attributeblock/query_selective_test.go` (new)
-- `pkg/attributeblock/query.go` (modified)
-- `pkg/attributeblock/reader.go` (modified)
+- `pkg/attributeindex/query_selective.go` (new)
+- `pkg/attributeindex/query_selective_test.go` (new)
+- `pkg/attributeindex/query.go` (modified)
+- `pkg/attributeindex/reader.go` (modified)
 
 ## Key Achievements
 

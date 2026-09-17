@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"context"

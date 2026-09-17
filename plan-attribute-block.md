@@ -1,28 +1,37 @@
-# Attribute block plan
+# Attribute index prototype and superseded design
 
-## Status and scope
+> **Superseded for integration.** This document records the original standalone
+> attribute-block prototype and its assessment. The active integration design is
+> [Attribute index integration plan](plan-attribute-index-integration.md). New
+> work uses `pkg/attributeindex`, calls the format `AttributeIndexV1`, embeds an
+> attribute-index payload in `block.bin` as an anonymous pseudo-dataset, and
+> rebuilds that payload during normal profile compaction. It does not create or
+> compact independent `attributes.bin` objects.
 
-Design proposal with an isolated implementation prototype in
-`pkg/attributeblock`. Reviewed through commit `fd97b4897` and the unstaged changes
-to `reader.go` and `writer.go`. The format is **not frozen**, and no production
-write path, query path, metastore, or compaction integration exists yet.
+## Historical status and scope
 
-The prototype implements parts of steps 2–4 below, but does not yet demonstrate
-legacy result equivalence, selective bounded query execution, or safe time and
-coverage semantics. See [Implementation audit and next steps](#implementation-audit-and-next-steps)
-for the current inventory, review findings, and ordered follow-up work.
+The isolated prototype, now in `pkg/attributeindex`, was reviewed through commit
+`fd97b4897` and the subsequent reader and writer changes. The format is **not
+frozen**, and production write-path, query-path, metastore, and compaction
+integration do not yet exist.
 
-Build a dedicated, immutable attribute index for metadata queries:
+The prototype implements parts of the historical steps 2–4 below, but does not
+yet demonstrate legacy result equivalence, selective bounded query execution, or
+safe time and coverage semantics. See [Implementation audit and next steps](#implementation-audit-and-next-steps)
+for the historical inventory, review findings, and ordered follow-up work.
+
+The prototype builds a dedicated, immutable attribute index for metadata queries:
 
 - `LabelNames`
 - `LabelValues`
 - `Series`, including projected label sets
 - Label selectors, with a future scoped and typed query model for OTLP
 
-Call the storage unit an **attribute block**, the initial format
-`AttributeBlockV1`, and the object `attributes.bin`. Attribute blocks are separate
-from profile blocks and their dataset formats. Do not overload `DatasetFormat1`
-or assign a new dataset format number as part of this proposal.
+The standalone object and independently scheduled compaction described below are
+historical only. The integration plan defines the current embedded-payload and
+normal-profile-compaction design. `DatasetFormat1` remains reserved for the
+existing tenant-wide TSDB index; the attribute index will use a new dataset
+format when block integration is added.
 
 Use a small custom, page-oriented format and an S3 range-buffered reader. Do not
 introduce Arrow in the first implementation. Keep the existing profile storage
@@ -360,7 +369,7 @@ unnecessary intermediate objects and repeated decoding.
 
 ## Independent compaction and publication
 
-Build hourly attribute blocks and compact them into daily blocks. A daily block
+Build hourly attribute indexes and compact them into daily blocks. A daily block
 must preserve sub-day activity/coverage, not just a union of attributes.
 
 Use bounded-size shards, with a declared shard scheme. A stable hash of the full
@@ -410,7 +419,7 @@ not modified by this proposal.
 ### Committed implementation through `fd97b4897`
 
 All 13 implementation commits, starting at `d8e9cdf8c`, are confined to
-`pkg/attributeblock`; there are no callers outside that package.
+`pkg/attributeindex`; there are no callers outside that package.
 
 | Area | Implemented | Important remaining work |
 | --- | --- | --- |
@@ -494,7 +503,7 @@ compaction work.
 
 Validation performed:
 
-- `go test -race -count=1 -cover ./pkg/attributeblock` passes on the working tree:
+- `go test -race -count=1 -cover ./pkg/attributeindex` passes on the working tree:
   13 existing top-level tests, 75.4% statement coverage. The committed Go sources
   also pass under a Go overlay, without changing the working files.
 - Temporary review probes reproduced the column-length panic, regex mismatch,
@@ -629,7 +638,7 @@ next commits.
   LabelNames on current Format1 as a separate experiment.
 - Keep gRPC batching experiments separate from attribute-block benchmarks.
 
-### 2. AttributeBlockV1 primitives
+### 2. AttributeIndexV1 primitives
 
 - Specify scoped keys, typed equality, entity kinds, and time semantics.
 - Implement the page directory, writer, buffered range reader, and inspection

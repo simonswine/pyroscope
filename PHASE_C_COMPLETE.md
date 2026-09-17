@@ -199,14 +199,14 @@ require.GreaterOrEqual(t, source.calls, 3, "should at least fetch header/footer/
 ## Files Changed (7)
 
 ### New
-1. `pkg/attributeblock/bounded_execution_test.go` - 9 new tests
+1. `pkg/attributeindex/bounded_execution_test.go` - 9 new tests
 
 ### Modified
-2. `pkg/attributeblock/ranges.go` - Fixed cleanup logic
-3. `pkg/attributeblock/reader.go` - Memory tracking, fetchPages, conversions
-4. `pkg/attributeblock/ranges_fetch_test.go` - Updated error message
-5. `pkg/attributeblock/attributeblock_test.go` - Flexible GET count assertions
-6. `pkg/attributeblock/query_pages_test.go` - Flexible GET count assertions
+2. `pkg/attributeindex/ranges.go` - Fixed cleanup logic
+3. `pkg/attributeindex/reader.go` - Memory tracking, fetchPages, conversions
+4. `pkg/attributeindex/ranges_fetch_test.go` - Updated error message
+5. `pkg/attributeindex/attributeindex_test.go` - Flexible GET count assertions
+6. `pkg/attributeindex/query_pages_test.go` - Flexible GET count assertions
 7. `ATTRIBUTE_BLOCK_WORK.md` - Updated status
 
 ## Memory Budget Hierarchy (Documented)
@@ -247,7 +247,7 @@ require.GreaterOrEqual(t, source.calls, 3, "should at least fetch header/footer/
 
 ### Phase D: Benchmarking (READY)
 1. Establish TSDB baseline (latency, GET count, bytes)
-2. Measure attribute block queries against same baseline
+2. Measure attribute index queries against same baseline
 3. Document cold vs warm query performance
 4. Measure coalescing effectiveness
 5. Identify opportunities for per-key dict/postings split

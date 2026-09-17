@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"fmt"
@@ -78,19 +78,19 @@ func validateAllocationBounds(entityCount uint32, keyCount int) error {
 	// Each forward column needs entityCount * 4 bytes minimum
 	// Each dictionary needs roughly entityCount/10 values in worst case (high estimate)
 	// Postings similarly need entityCount * 4 bytes per key worst case
-	
+
 	if keyCount > 1<<20 {
 		return fmt.Errorf("key count %d exceeds maximum 1M", keyCount)
 	}
-	
+
 	// Rough estimate: each key needs ~3 * entityCount * 4 bytes (column + postings presence + average posting)
 	// Plus dictionaries are typically much smaller
 	estimatedBytes := uint64(keyCount) * uint64(entityCount) * 12
 	const maxAllocation = 16 << 30 // 16GB budget
-	
+
 	if estimatedBytes > maxAllocation {
 		return fmt.Errorf("estimated allocation %d bytes exceeds budget %d for %d keys and %d entities", estimatedBytes, maxAllocation, keyCount, entityCount)
 	}
-	
+
 	return nil
 }

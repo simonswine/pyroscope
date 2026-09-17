@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"bytes"
@@ -9,8 +9,12 @@ import (
 )
 
 var (
-	headerMagic = [8]byte{'A', 'T', 'T', 'R', 'B', 'L', 'K', 1}
-	footerMagic = [8]byte{'A', 'T', 'T', 'R', 'F', 'T', 'R', 1}
+	// AttributeIndexV1 deliberately has a distinct wire identity from the
+	// standalone attribute-block prototype. Readers reject the old ATTRBLK /
+	// ATTRFTR identity rather than treating its mapping-less payload as a valid
+	// selector-to-dataset lookup source.
+	headerMagic = [8]byte{'A', 'T', 'T', 'R', 'I', 'D', 'X', 1}
+	footerMagic = [8]byte{'A', 'T', 'T', 'R', 'I', 'F', 'T', 1}
 )
 
 const (

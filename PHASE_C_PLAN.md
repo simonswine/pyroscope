@@ -280,9 +280,9 @@ func FetchRanges(...) ([][]byte, error) {
 ## References
 
 - Assessment finding #3: "Bounded fetches not connected"
-- `pkg/attributeblock/ranges.go` - FetchRanges implementation
-- `pkg/attributeblock/ranges_test.go` - existing tests (basic)
-- `pkg/attributeblock/reader.go` - current direct readRange usage
+- `pkg/attributeindex/ranges.go` - FetchRanges implementation
+- `pkg/attributeindex/ranges_test.go` - existing tests (basic)
+- `pkg/attributeindex/reader.go` - current direct readRange usage
 
 ## Estimated Effort
 

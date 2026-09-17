@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"cmp"
@@ -63,7 +63,7 @@ func (o FetchOptions) valid() error {
 // owned by the caller.
 func FetchRanges(ctx context.Context, source RangeSource, object string, ranges []Range, options FetchOptions) ([][]byte, error) {
 	if source == nil {
-		return nil, fmt.Errorf("attribute block range source is nil")
+		return nil, fmt.Errorf("attribute index range source is nil")
 	}
 	if err := options.valid(); err != nil {
 		return nil, err

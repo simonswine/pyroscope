@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"context"
@@ -17,7 +17,7 @@ func TestReaderSeriesUsesForwardColumnsInsteadOfEntityPage(t *testing.T) {
 	data, err := writer.Bytes()
 	require.NoError(t, err)
 	source := &memoryRanges{data: data}
-	reader, err := Open(context.Background(), source, ObjectName, int64(len(data)))
+	reader, err := Open(context.Background(), source, PayloadName, int64(len(data)))
 	require.NoError(t, err)
 
 	series, err := reader.Series(context.Background(), []Matcher{{

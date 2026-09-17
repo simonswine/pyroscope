@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"context"
@@ -72,7 +72,7 @@ func testReader(t *testing.T, entities []Entity) *Reader {
 	}
 	data, err := writer.Bytes()
 	require.NoError(t, err)
-	reader, err := Open(context.Background(), &memoryRanges{data: data}, ObjectName, int64(len(data)))
+	reader, err := Open(context.Background(), &memoryRanges{data: data}, PayloadName, int64(len(data)))
 	require.NoError(t, err)
 	return reader
 }

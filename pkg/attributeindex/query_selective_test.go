@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"bytes"
@@ -78,7 +78,7 @@ func TestSelectiveQueryFetchesFewerColumns(t *testing.T) {
 	// If it were non-selective, it would fetch all 10 forward column pages.
 	// Since Open already fetched header, footer, directory, we're only counting
 	// pages fetched during Series query.
-	
+
 	// We expect ~4 page fetches (dictionaries + postings + 2 columns)
 	// Allow some tolerance for caching behavior
 	require.LessOrEqual(t, totalRanges, 6, "Should fetch few pages, not all 10 columns")

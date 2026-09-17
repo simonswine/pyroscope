@@ -1,19 +1,35 @@
-// Package attributeblock implements the on-object primitives for immutable
-// AttributeBlockV1 indexes. It intentionally does not share DatasetFormat1 or
-// profile-block encodings.
-package attributeblock
+// Package attributeindex implements the payload primitives for immutable
+// AttributeIndexV1 indexes. Attribute-index payloads are embedded in block.bin;
+// this package deliberately does not share DatasetFormat1 or profile-block
+// encodings.
+package attributeindex
 
 import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 )
 
+var ErrDatasetMappingsUnavailable = errors.New("attribute index dataset mappings are unavailable in AttributeIndexV1")
+
 const (
-	ObjectName = "attributes.bin"
-	Version    = uint16(1)
+	// FormatName identifies this payload format in documentation and errors.
+	FormatName = "AttributeIndexV1"
+
+	// Version is the AttributeIndexV1 payload version. It has no
+	// entity-to-dataset mapping and must therefore never be used for
+	// selector-to-dataset lookup; a mapping-capable encoding will use a new
+	// version or a required feature flag. The distinct AttributeIndexV1 magic
+	// intentionally rejects old standalone attribute-block prototype payloads.
+	Version = uint16(1)
+
+	// PayloadName is a diagnostic name for a standalone payload source, primarily
+	// for tests. Block integration supplies the containing block.bin object name
+	// to Open instead.
+	PayloadName = "attribute-index"
 )
 
 // Scope identifies the source namespace of an attribute. It is part of a Key's
@@ -107,7 +123,7 @@ func (v Value) valid() error {
 		}
 		return nil
 	case ValueFloat64, ValueArray, ValueMap:
-		return fmt.Errorf("attribute value type %d is not supported by AttributeBlockV1", v.Type)
+		return fmt.Errorf("attribute value type %d is not supported by AttributeIndexV1", v.Type)
 	default:
 		return fmt.Errorf("invalid attribute value type %d", v.Type)
 	}

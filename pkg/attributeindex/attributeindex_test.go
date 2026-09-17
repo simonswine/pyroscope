@@ -1,8 +1,9 @@
-package attributeblock
+package attributeindex
 
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"sync"
 	"testing"
@@ -26,7 +27,7 @@ func (m *memoryRanges) GetRange(_ context.Context, _ string, off, length int64) 
 	return io.NopCloser(bytes.NewReader(m.data[off : off+length])), nil
 }
 
-func TestAttributeBlockV1_RoundTrip(t *testing.T) {
+func TestAttributeIndexV1_RoundTrip(t *testing.T) {
 	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
 	require.NoError(t, err)
 	require.NoError(t, writer.AddEntity(Entity{Attributes: []Attribute{
@@ -40,9 +41,12 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 	}}))
 	data, err := writer.Bytes()
 	require.NoError(t, err)
+	// AttributeIndexV1 must not be confused with the old ATTRBLK prototype.
+	require.Equal(t, []byte{'A', 'T', 'T', 'R', 'I', 'D', 'X', 1}, data[:8])
+	require.Equal(t, Version, binary.LittleEndian.Uint16(data[8:10]))
 
 	source := &memoryRanges{data: data}
-	reader, err := Open(context.Background(), source, ObjectName, int64(len(data)))
+	reader, err := Open(context.Background(), source, PayloadName, int64(len(data)))
 	require.NoError(t, err)
 	require.Equal(t, Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage}, reader.Metadata())
 	require.Equal(t, 3, source.calls, "open must not fetch the entity page")
@@ -88,7 +92,33 @@ func TestAttributeBlockV1_RoundTrip(t *testing.T) {
 	require.GreaterOrEqual(t, source.calls, 3, "should at least fetch header, footer, directory")
 }
 
-func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
+func TestAttributeIndexV1_RejectsStandaloneAttributeBlockIdentity(t *testing.T) {
+	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
+	require.NoError(t, err)
+	require.NoError(t, writer.AddEntity(Entity{}))
+	data, err := writer.Bytes()
+	require.NoError(t, err)
+	copy(data[:8], []byte{'A', 'T', 'T', 'R', 'B', 'L', 'K', 1})
+
+	_, err = Open(context.Background(), &memoryRanges{data: data}, PayloadName, int64(len(data)))
+	require.ErrorContains(t, err, "unsupported attribute index header")
+}
+
+func TestAttributeIndexV1_DatasetLookupRequiresMappings(t *testing.T) {
+	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
+	require.NoError(t, err)
+	require.NoError(t, writer.AddEntity(Entity{}))
+	data, err := writer.Bytes()
+	require.NoError(t, err)
+
+	reader, err := Open(context.Background(), &memoryRanges{data: data}, PayloadName, int64(len(data)))
+	require.NoError(t, err)
+	datasetIDs, err := reader.DatasetIDs(context.Background(), nil)
+	require.ErrorIs(t, err, ErrDatasetMappingsUnavailable)
+	require.Nil(t, datasetIDs)
+}
+
+func TestAttributeIndexV1_RejectsCorruptPage(t *testing.T) {
 	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
 	require.NoError(t, err)
 	require.NoError(t, writer.AddEntity(Entity{}))
@@ -96,7 +126,7 @@ func TestAttributeBlockV1_RejectsCorruptPage(t *testing.T) {
 	require.NoError(t, err)
 	data[headerSize] ^= 0xff
 
-	reader, err := Open(context.Background(), &memoryRanges{data: data}, ObjectName, int64(len(data)))
+	reader, err := Open(context.Background(), &memoryRanges{data: data}, PayloadName, int64(len(data)))
 	require.NoError(t, err)
 	_, err = reader.Entities(context.Background())
 	require.ErrorContains(t, err, "checksum")

@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"context"
@@ -46,24 +46,24 @@ type Reader struct {
 // fetch entity data.
 func Open(ctx context.Context, source RangeSource, object string, size int64) (*Reader, error) {
 	if source == nil {
-		return nil, fmt.Errorf("attribute block range source is nil")
+		return nil, fmt.Errorf("attribute index range source is nil")
 	}
 	if size < headerSize+footerSize {
-		return nil, fmt.Errorf("attribute block is too small: %d", size)
+		return nil, fmt.Errorf("attribute index is too small: %d", size)
 	}
 	header, err := readRange(ctx, source, object, 0, headerSize)
 	if err != nil {
 		return nil, fmt.Errorf("reading header: %w", err)
 	}
 	if string(header[:8]) != string(headerMagic[:]) || binary.LittleEndian.Uint16(header[8:10]) != Version {
-		return nil, fmt.Errorf("unsupported attribute block header")
+		return nil, fmt.Errorf("unsupported attribute index header")
 	}
 	footer, err := readRange(ctx, source, object, size-footerSize, footerSize)
 	if err != nil {
 		return nil, fmt.Errorf("reading footer: %w", err)
 	}
 	if string(footer[:8]) != string(footerMagic[:]) || binary.LittleEndian.Uint16(footer[8:10]) != Version {
-		return nil, fmt.Errorf("unsupported attribute block footer")
+		return nil, fmt.Errorf("unsupported attribute index footer")
 	}
 	directoryOffset := int64(binary.LittleEndian.Uint64(footer[12:20]))
 	directoryLength := int64(binary.LittleEndian.Uint32(footer[20:24]))
@@ -110,6 +110,13 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
 
+// DatasetIDs deliberately returns an error for AttributeIndexV1 rather than an
+// empty result: version 1 payloads predate entity-to-dataset mappings. A later
+// mapping-capable format will implement selector-to-dataset lookup here.
+func (r *Reader) DatasetIDs(_ context.Context, _ []Matcher) ([]uint32, error) {
+	return nil, ErrDatasetMappingsUnavailable
+}
+
 // Close releases all decoded query-lifetime pages. It does not close the
 // RangeSource, whose lifetime belongs to the caller. Close is idempotent.
 func (r *Reader) Close() error {
@@ -126,7 +133,7 @@ func (r *Reader) Close() error {
 
 func (r *Reader) ensureOpen() error {
 	if r.closed {
-		return fmt.Errorf("attribute block reader is closed")
+		return fmt.Errorf("attribute index reader is closed")
 	}
 	return nil
 }
@@ -160,7 +167,7 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 	r.mu.Unlock()
 	pageIdx, ok := r.pageIndex(pageEntity, ^uint32(0))
 	if !ok {
-		return nil, fmt.Errorf("AttributeBlockV1 is missing its entity page")
+		return nil, fmt.Errorf("AttributeIndexV1 is missing its entity page")
 	}
 	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
@@ -199,7 +206,7 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 	r.mu.Unlock()
 	pageIdx, ok := r.pageIndex(pageDictionary, ^uint32(0))
 	if !ok {
-		return nil, fmt.Errorf("AttributeBlockV1 is missing its dictionary page")
+		return nil, fmt.Errorf("AttributeIndexV1 is missing its dictionary page")
 	}
 	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
@@ -242,7 +249,7 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	}
 	pageIdx, ok := r.pageIndex(pagePostings, ^uint32(0))
 	if !ok {
-		return nil, fmt.Errorf("AttributeBlockV1 is missing its postings page")
+		return nil, fmt.Errorf("AttributeIndexV1 is missing its postings page")
 	}
 	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
 	if err != nil {
@@ -324,7 +331,7 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	// Verify all columns are present
 	for i := range columns {
 		if columns[i] == nil {
-			return nil, fmt.Errorf("AttributeBlockV1 is missing forward column %d", i)
+			return nil, fmt.Errorf("AttributeIndexV1 is missing forward column %d", i)
 		}
 	}
 	// Validate cross-page consistency before caching

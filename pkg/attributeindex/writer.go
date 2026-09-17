@@ -1,4 +1,4 @@
-package attributeblock
+package attributeindex
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 	"slices"
 )
 
-// Writer builds an immutable AttributeBlockV1 object. Writer is not safe for
+// Writer builds an immutable AttributeIndexV1 object. Writer is not safe for
 // concurrent use.
 type Writer struct {
 	metadata Metadata
@@ -22,7 +22,7 @@ func NewWriter(metadata Metadata) (*Writer, error) {
 	// This writer has no activity pages yet. Refusing the exact mode prevents
 	// it from manufacturing timestamps while converting legacy inputs.
 	if metadata.TimeSemantics == TimeNativeExactActivity {
-		return nil, fmt.Errorf("native exact activity requires activity pages, which AttributeBlockV1 writer does not implement yet")
+		return nil, fmt.Errorf("native exact activity requires activity pages, which AttributeIndexV1 writer does not implement yet")
 	}
 	return &Writer{metadata: metadata}, nil
 }
