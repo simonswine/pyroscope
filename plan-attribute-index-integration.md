@@ -295,14 +295,14 @@ The exact exported names and package placement can follow existing conventions.
 The same conversion and identity rules must be used by segment writing and
 compaction.
 
-- [ ] Convert complete persisted labels into legacy string attributes.
-- [ ] Snapshot label data before callers reuse backing memory.
-- [ ] Deduplicate using full canonical equality and accumulate references.
-- [ ] Propagate validation/encoding errors and support context cancellation in
+- [x] Convert complete persisted labels into legacy string attributes.
+- [x] Snapshot label data before callers reuse backing memory.
+- [x] Deduplicate using full canonical equality and accumulate references.
+- [x] Propagate validation/encoding errors and support context cancellation in
       long build and encoding loops.
-- [ ] Define builder lifetime and cleanup on success and every error path.
-- [ ] Enforce entity/reference limits before `uint32` conversion.
-- [ ] Establish explicit build-memory and output-size limits.
+- [x] Define builder lifetime and cleanup on success and every error path.
+- [x] Enforce entity/reference limits before `uint32` conversion.
+- [x] Establish explicit build-memory and output-size limits.
 - [ ] Benchmark realistic compacted-block cardinalities and implement paging,
       splitting, or spill support as needed before broad enablement.
 - [ ] If splitting is required, define how multiple physical index fragments
@@ -311,8 +311,18 @@ compaction.
       incomplete index as complete. If an optional skip mode is introduced,
       represent absence explicitly and retain TSDB fallback.
 
-A `WriteTo` wrapper around the current `Bytes()` implementation alone is not a
-bounded-memory writer and should not be presented as one.
+`attributeindex.SeriesBuilder` is the shared label adapter. It accepts the
+read-only `model.LabelSet` interface (and therefore `model.Labels`), snapshots
+complete persisted labels as `ScopeLegacy` strings, and deduplicates with
+canonical full-entity equality before unioning sorted dataset references.
+`BuilderLimits` explicitly bounds retained entity/reference data and returned
+payload size, while `Close` releases retained state. `AddSeriesContext` and
+`Writer.BytesContext` check cancellation while building and encoding.
+
+The current payload encoder still materializes individual primitive pages and
+the complete output. A `WriteTo` wrapper around the current `Bytes()`
+implementation alone is not a bounded-memory writer and should not be
+presented as one; paging/spill work remains required before broad enablement.
 
 ### 5. Integrate segment-writer emission
 

@@ -2,6 +2,7 @@ package attributeindex
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -85,35 +86,50 @@ func (w *Writer) AddEntityWithDatasets(entity Entity, datasetIDs []uint32) error
 	return nil
 }
 
-// Bytes returns a complete attribute-index payload. Identical writer input has a
-// deterministic encoding. The entity payload is one independently verifiable
-// page in this initial primitive; the directory permits row-group paging to be
-// added without changing the footer contract.
+// Bytes returns a complete attribute-index payload using a background context.
 func (w *Writer) Bytes() ([]byte, error) {
-	entities, mappings, err := w.entitiesForEncoding()
+	return w.BytesContext(context.Background())
+}
+
+// BytesContext returns a complete attribute-index payload. Identical writer
+// input has a deterministic encoding. It checks ctx periodically while
+// canonicalizing and encoding large entity sets. The entity payload is one
+// independently verifiable page in this initial primitive; the directory
+// permits row-group paging to be added without changing the footer contract.
+func (w *Writer) BytesContext(ctx context.Context) ([]byte, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("attribute index encoding context must not be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entities, mappings, err := w.entitiesForEncoding(ctx)
 	if err != nil {
 		return nil, err
 	}
-	entityPage, err := encodeEntities(entities)
+	entityPage, err := encodeEntities(ctx, entities)
 	if err != nil {
 		return nil, err
 	}
-	keys := keysForEntities(entities)
-	dictionaries, err := buildDictionaries(keys, entities)
+	keys, err := keysForEntities(ctx, entities)
 	if err != nil {
 		return nil, err
 	}
-	postingsPage, err := encodePostings(keys, dictionaries, entities)
+	dictionaries, err := buildDictionaries(ctx, keys, entities)
 	if err != nil {
 		return nil, err
 	}
-	columnPages, err := encodeForwardColumns(keys, dictionaries, entities)
+	postingsPage, err := encodePostings(ctx, keys, dictionaries, entities)
+	if err != nil {
+		return nil, err
+	}
+	columnPages, err := encodeForwardColumns(ctx, keys, dictionaries, entities)
 	if err != nil {
 		return nil, err
 	}
 	var mappingPage []byte
 	if w.hasDatasetMapping {
-		mappingPage, err = encodeDatasetMappings(mappings)
+		mappingPage, err = encodeDatasetMappings(ctx, mappings)
 		if err != nil {
 			return nil, err
 		}
@@ -131,6 +147,9 @@ func (w *Writer) Bytes() ([]byte, error) {
 	encoder := attributeIndexEncoders.Get().(*zstd.Encoder)
 	defer attributeIndexEncoders.Put(encoder)
 	appendPage := func(kind pageKind, keyID uint32, data []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(data) > maxPageLen {
 			return fmt.Errorf("attribute page decoded length %d exceeds limit %d", len(data), maxPageLen)
 		}
@@ -150,7 +169,11 @@ func (w *Writer) Bytes() ([]byte, error) {
 	if err := appendPage(pageEntity, ^uint32(0), entityPage); err != nil {
 		return nil, err
 	}
-	if err := appendPage(pageDictionary, ^uint32(0), encodeDictionaries(dictionaries)); err != nil {
+	dictionaryPage, err := encodeDictionaries(ctx, dictionaries)
+	if err != nil {
+		return nil, err
+	}
+	if err := appendPage(pageDictionary, ^uint32(0), dictionaryPage); err != nil {
 		return nil, err
 	}
 	if err := appendPage(pagePostings, ^uint32(0), postingsPage); err != nil {
@@ -179,7 +202,7 @@ func (w *Writer) Bytes() ([]byte, error) {
 	return append(object, footer[:]...), nil
 }
 
-func (w *Writer) entitiesForEncoding() ([]Entity, [][]uint32, error) {
+func (w *Writer) entitiesForEncoding(ctx context.Context) ([]Entity, [][]uint32, error) {
 	if !w.hasDatasetMapping {
 		return w.entities, nil, nil
 	}
@@ -189,6 +212,11 @@ func (w *Writer) entitiesForEncoding() ([]Entity, [][]uint32, error) {
 	}
 	entries := make([]entry, len(w.entities))
 	for i := range w.entities {
+		if i&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		if len(w.entityDatasetIDs[i]) == 0 {
 			return nil, nil, fmt.Errorf("entity %d is missing dataset mappings", i)
 		}
@@ -213,20 +241,30 @@ func (w *Writer) entitiesForEncoding() ([]Entity, [][]uint32, error) {
 	return entities, mappings, nil
 }
 
-func keysForEntities(entities []Entity) []Key {
+func keysForEntities(ctx context.Context, entities []Entity) ([]Key, error) {
 	keys := make([]Key, 0)
-	for _, entity := range entities {
+	for i, entity := range entities {
+		if i&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for _, attribute := range entity.Attributes {
 			keys = append(keys, attribute.Key)
 		}
 	}
 	slices.SortFunc(keys, compareKey)
-	return compactKeys(keys)
+	return compactKeys(keys), nil
 }
 
-func buildDictionaries(keys []Key, entities []Entity) ([][]Value, error) {
+func buildDictionaries(ctx context.Context, keys []Key, entities []Entity) ([][]Value, error) {
 	values := make([][]Value, len(keys))
-	for _, entity := range entities {
+	for i, entity := range entities {
+		if i&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for _, attribute := range entity.Attributes {
 			i, ok := slices.BinarySearchFunc(keys, attribute.Key, compareKey)
 			if !ok {
@@ -242,26 +280,42 @@ func buildDictionaries(keys []Key, entities []Entity) ([][]Value, error) {
 	return values, nil
 }
 
-func encodeDictionaries(values [][]Value) []byte {
+func encodeDictionaries(ctx context.Context, values [][]Value) ([]byte, error) {
 	b := appendUvarint(nil, uint64(len(values)))
 	for _, dictionary := range values {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		b = appendUvarint(b, uint64(len(dictionary)))
-		for _, value := range dictionary {
+		for j, value := range dictionary {
+			if j&0x3ff == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			b = append(b, byte(value.Type))
 			b = appendBytes(b, value.Data)
 		}
 	}
-	return b
+	return b, nil
 }
 
 // encodePostings stores sorted entity IDs for presence and each dictionary
 // value. Dictionary positions are local to this immutable block.
-func encodePostings(keys []Key, dictionaries [][]Value, entities []Entity) ([]byte, error) {
+func encodePostings(ctx context.Context, keys []Key, dictionaries [][]Value, entities []Entity) ([]byte, error) {
 	b := appendUvarint(nil, uint64(len(keys)))
 	for keyIndex, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		presence := make([]uint32, 0)
 		valuePostings := make([][]uint32, len(dictionaries[keyIndex]))
 		for entityID, entity := range entities {
+			if entityID&0x3ff == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			attribute, found := findAttribute(entity.Attributes, key)
 			if !found {
 				continue
@@ -273,18 +327,30 @@ func encodePostings(keys []Key, dictionaries [][]Value, entities []Entity) ([]by
 			}
 			valuePostings[valueID] = append(valuePostings[valueID], uint32(entityID))
 		}
-		b = appendPosting(b, presence)
+		var err error
+		b, err = appendPosting(ctx, b, presence)
+		if err != nil {
+			return nil, err
+		}
 		for _, posting := range valuePostings {
-			b = appendPosting(b, posting)
+			b, err = appendPosting(ctx, b, posting)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	return b, nil
 }
 
-func appendPosting(b []byte, posting []uint32) []byte {
+func appendPosting(ctx context.Context, b []byte, posting []uint32) ([]byte, error) {
 	b = appendUvarint(b, uint64(len(posting)))
 	var previous uint32
 	for i, entityID := range posting {
+		if i&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		delta := entityID
 		if i > 0 {
 			delta -= previous
@@ -292,12 +358,17 @@ func appendPosting(b []byte, posting []uint32) []byte {
 		b = appendUvarint(b, uint64(delta))
 		previous = entityID
 	}
-	return b
+	return b, nil
 }
 
-func encodeDatasetMappings(mappings [][]uint32) ([]byte, error) {
+func encodeDatasetMappings(ctx context.Context, mappings [][]uint32) ([]byte, error) {
 	b := appendUvarint(nil, uint64(len(mappings)))
 	for entityID, ids := range mappings {
+		if entityID&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if len(ids) == 0 {
 			return nil, fmt.Errorf("entity %d has no dataset mappings", entityID)
 		}
@@ -320,11 +391,19 @@ func encodeDatasetMappings(mappings [][]uint32) ([]byte, error) {
 
 // encodeForwardColumns stores a dictionary-local value ID for every key and
 // entity. Zero is ABSENT; nonzero IDs are the dictionary index plus one.
-func encodeForwardColumns(keys []Key, dictionaries [][]Value, entities []Entity) ([][]byte, error) {
+func encodeForwardColumns(ctx context.Context, keys []Key, dictionaries [][]Value, entities []Entity) ([][]byte, error) {
 	pages := make([][]byte, len(keys))
 	for keyIndex, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		page := appendUvarint(nil, uint64(len(entities)))
-		for _, entity := range entities {
+		for entityID, entity := range entities {
+			if entityID&0x3ff == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			attribute, found := findAttribute(entity.Attributes, key)
 			if !found {
 				page = appendUvarint(page, 0)
@@ -475,12 +554,17 @@ func readPosting(r *bytes.Reader) ([]uint32, error) {
 	return posting, nil
 }
 
-func encodeEntities(entities []Entity) ([]byte, error) {
+func encodeEntities(ctx context.Context, entities []Entity) ([]byte, error) {
 	if len(entities) > 1<<32-1 {
 		return nil, fmt.Errorf("entity count %d exceeds uint32 limit", len(entities))
 	}
 	b := appendUvarint(nil, uint64(len(entities)))
-	for _, entity := range entities {
+	for i, entity := range entities {
+		if i&0x3ff == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		b = appendUvarint(b, uint64(len(entity.Attributes)))
 		for _, attribute := range entity.Attributes {
 			b = append(b, byte(attribute.Key.Scope))

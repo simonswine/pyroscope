@@ -123,7 +123,7 @@ func benchmarkEntityPage(b testing.TB, entities int) []byte {
 			{Key: Key{Scope: ScopeLegacy, Name: "environment"}, Value: StringValue("production")},
 		}}
 	}
-	page, err := encodeEntities(values)
+	page, err := encodeEntities(context.Background(), values)
 	require.NoError(b, err)
 	return page
 }
