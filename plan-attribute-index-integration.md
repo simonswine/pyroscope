@@ -30,7 +30,10 @@ routing unchanged initially.
   `github.com/klauspost/compress/zstd` and `zstd.SpeedFastest`. This is the chosen
   codec and level, not an open codec-selection benchmark.
 - Keep production reads on TSDB until lookup equivalence, query semantics, and
-  performance are validated separately.
+  performance are validated separately. An experimental per-request opt-in is
+  available through `X-Pyroscope-Use-Attribute-Index: true`: it prefers an
+  available AttributeIndexV1 per tenant and falls back to the tenant-wide TSDB
+  index for blocks that do not contain one. The default route remains TSDB.
 
 This revises the integration direction in `plan-attribute-block.md`, which
 proposes separate `attributes.bin` objects and independently scheduled attribute

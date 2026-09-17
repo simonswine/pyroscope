@@ -43,6 +43,10 @@ message InvokeOptions {
   // be listed in the request explicitly.
   bool sanitize_on_merge = 1;
   bool collect_diagnostics = 2;
+  // Use AttributeIndexV1 to resolve profile datasets when it is available.
+  // This is an experimental, per-request opt-in; blocks without an attribute
+  // index continue to resolve through the tenant-wide TSDB index.
+  bool use_attribute_index = 3;
 }
 
 message InvokeRequest {

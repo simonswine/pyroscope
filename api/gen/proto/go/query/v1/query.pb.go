@@ -380,8 +380,12 @@ type InvokeOptions struct {
 	// be listed in the request explicitly.
 	SanitizeOnMerge    bool `protobuf:"varint,1,opt,name=sanitize_on_merge,json=sanitizeOnMerge,proto3" json:"sanitize_on_merge,omitempty"`
 	CollectDiagnostics bool `protobuf:"varint,2,opt,name=collect_diagnostics,json=collectDiagnostics,proto3" json:"collect_diagnostics,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Use AttributeIndexV1 to resolve profile datasets when it is available.
+	// This is an experimental, per-request opt-in; blocks without an attribute
+	// index continue to resolve through the tenant-wide TSDB index.
+	UseAttributeIndex bool `protobuf:"varint,3,opt,name=use_attribute_index,json=useAttributeIndex,proto3" json:"use_attribute_index,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *InvokeOptions) Reset() {
@@ -424,6 +428,13 @@ func (x *InvokeOptions) GetSanitizeOnMerge() bool {
 func (x *InvokeOptions) GetCollectDiagnostics() bool {
 	if x != nil {
 		return x.CollectDiagnostics
+	}
+	return false
+}
+
+func (x *InvokeOptions) GetUseAttributeIndex() bool {
+	if x != nil {
+		return x.UseAttributeIndex
 	}
 	return false
 }
@@ -2707,10 +2718,11 @@ const file_query_v1_query_proto_rawDesc = "" +
 	"\x0elabel_selector\x18\x03 \x01(\tR\rlabelSelector\x12%\n" +
 	"\x05query\x18\x04 \x03(\v2\x0f.query.v1.QueryR\x05query\";\n" +
 	"\rQueryResponse\x12*\n" +
-	"\areports\x18\x01 \x03(\v2\x10.query.v1.ReportR\areports\"l\n" +
+	"\areports\x18\x01 \x03(\v2\x10.query.v1.ReportR\areports\"\x9c\x01\n" +
 	"\rInvokeOptions\x12*\n" +
 	"\x11sanitize_on_merge\x18\x01 \x01(\bR\x0fsanitizeOnMerge\x12/\n" +
-	"\x13collect_diagnostics\x18\x02 \x01(\bR\x12collectDiagnostics\"\x96\x02\n" +
+	"\x13collect_diagnostics\x18\x02 \x01(\bR\x12collectDiagnostics\x12.\n" +
+	"\x13use_attribute_index\x18\x03 \x01(\bR\x11useAttributeIndex\"\x96\x02\n" +
 	"\rInvokeRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x03(\tR\x06tenant\x12\x1d\n" +
 	"\n" +

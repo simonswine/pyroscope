@@ -9,12 +9,14 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/tracing"
+	"github.com/prometheus/prometheus/model/labels"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	queryv1 "github.com/grafana/pyroscope/api/gen/proto/go/query/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/util"
 )
@@ -142,50 +144,60 @@ func (b *blockContext) execute() error {
 	return nil
 }
 
-// datasetIndices returns the Format1 (dataset_tsdb_index) pseudo-datasets
-// in the block metadata that need to be resolved into concrete datasets
-// before the query can be executed. It returns nil when no resolution
-// is needed: either the metadata already lists explicit (Format0)
-// datasets, or the query is index-only and can be served directly from
-// the dataset_index TSDB section.
-//
-// Multiple Format1 datasets may be present in a single block when a
-// segment writer covers more than one tenant: it emits a per-tenant
-// dataset_index pseudo-dataset, and the metastore returns all matching
-// pseudo-datasets to the query backend. In that case all of their
-// indices must be looked up so the union of resolved datasets is
-// considered.
+// datasetIndices selects the pseudo-datasets that resolve into real profile
+// datasets. Attribute indexes are used only for the explicit experimental
+// opt-in; the TSDB index remains the default and fallback for tenants whose
+// blocks do not contain an attribute index.
 func (b *blockContext) datasetIndices() []*metastorev1.Dataset {
 	md := b.obj.Metadata()
-	var indices []*metastorev1.Dataset
+	var tsdbIndices, attributeIndices []*metastorev1.Dataset
 	for _, ds := range md.Datasets {
-		if block.DatasetFormat(ds.Format) == block.DatasetFormat1 {
-			indices = append(indices, ds)
+		switch block.DatasetFormat(ds.Format) {
+		case block.DatasetFormat1:
+			tsdbIndices = append(tsdbIndices, ds)
+		case block.DatasetFormat2:
+			attributeIndices = append(attributeIndices, ds)
 		}
 	}
-	if len(indices) == 0 {
+	if len(tsdbIndices) == 0 && len(attributeIndices) == 0 {
 		// The block's metadata explicitly lists datasets to be queried.
 		return nil
 	}
-	if len(indices) != len(md.Datasets) {
-		// The metastore is expected to return a uniform set of datasets
-		// (either all Format0 explicit datasets matched by service_name,
-		// or all Format1 pseudo-datasets matched by __tenant_dataset__).
-		// A mixed set is not expected; bail on the lookup so the query
-		// runs against the explicitly-listed datasets only.
+	if len(tsdbIndices)+len(attributeIndices) != len(md.Datasets) {
+		// A metadata response containing explicit datasets and indexes is not
+		// an index lookup response. Query its explicit datasets as-is.
 		return nil
 	}
 
-	// If the query only requires TSDB data, we can serve it directly
-	// from each Format1 dataset's TSDB section (which is aliased to the
-	// dataset_index) without resolving real datasets.
+	// If the query only requires TSDB data, retain only the TSDB pseudo-
+	// datasets: AttributeIndexV1 selects profile datasets and cannot answer an
+	// index-only request itself.
 	s := (&queryContext{blockContext: b}).sections()
 	indexOnly := len(s) == 1 && s[0] == block.SectionTSDB
 	if indexOnly {
-		oteltrace.SpanFromContext(b.ctx).SetAttributes(attribute.Bool("dataset_index_query_index_only", indexOnly))
+		md.Datasets = tsdbIndices
+		b.obj.SetMetadata(md)
+		oteltrace.SpanFromContext(b.ctx).SetAttributes(attribute.Bool("dataset_index_query_index_only", true))
 		return nil
 	}
 
+	if b.req.src.Options == nil || !b.req.src.Options.UseAttributeIndex || len(attributeIndices) == 0 {
+		return tsdbIndices
+	}
+
+	// Metadata planning fetches both pseudo-dataset types. Prefer a valid
+	// attribute index for each tenant, but retain TSDB lookup for old blocks
+	// where that tenant has no attribute-index pseudo-dataset.
+	attributeTenants := make(map[int32]struct{}, len(attributeIndices))
+	for _, ds := range attributeIndices {
+		attributeTenants[ds.Tenant] = struct{}{}
+	}
+	indices := attributeIndices
+	for _, ds := range tsdbIndices {
+		if _, ok := attributeTenants[ds.Tenant]; !ok {
+			indices = append(indices, ds)
+		}
+	}
 	return indices
 }
 
@@ -193,8 +205,7 @@ func (b *blockContext) lookupDatasets(indices []*metastorev1.Dataset) error {
 	oteltrace.SpanFromContext(b.ctx).SetAttributes(attribute.Bool("dataset_index_query", true))
 	oteltrace.SpanFromContext(b.ctx).SetAttributes(attribute.Int("dataset_index_count", len(indices)))
 
-	// As query execution has not started yet,
-	// we can safely open datasets.
+	// As query execution has not started yet, we can safely open datasets.
 	datasets := make([]*block.Dataset, len(indices))
 	for i, ds := range indices {
 		datasets[i] = block.NewDataset(ds, b.obj)
@@ -211,27 +222,36 @@ func (b *blockContext) lookupDatasets(indices []*metastorev1.Dataset) error {
 		md, err = b.obj.ReadMetadata(ctx)
 		return err
 	})
-	for _, d := range datasets {
+	for i, d := range datasets {
+		section := block.SectionDatasetIndex
+		if block.DatasetFormat(indices[i].Format) == block.DatasetFormat2 {
+			section = block.SectionAttributeIndex
+		}
 		g.Go(func() error {
-			return d.Open(ctx, block.SectionDatasetIndex)
+			return d.Open(ctx, section)
 		})
 	}
 	if err := g.Wait(); err != nil {
 		return err
 	}
 
-	// Each per-tenant dataset_index encodes its tenant's real datasets
-	// using their global position within the block as the chunk
-	// SeriesIndex (see segment writer and compaction). Therefore IDs
-	// from different per-tenant indices are disjoint and a simple union
-	// across tenants is correct.
 	datasetIDs := make(map[uint32]struct{})
-	for _, d := range datasets {
-		ids, err := getSeriesIDs(d.Index(), b.req.matchers...)
+	for i, d := range datasets {
+		var ids []uint32
+		var err error
+		if block.DatasetFormat(indices[i].Format) == block.DatasetFormat2 {
+			ids, err = d.AttributeIndex().DatasetIDs(ctx, attributeIndexMatchers(b.req.matchers))
+		} else {
+			var seriesIDs map[uint32]struct{}
+			seriesIDs, err = getSeriesIDs(d.Index(), b.req.matchers...)
+			for id := range seriesIDs {
+				datasetIDs[id] = struct{}{}
+			}
+		}
 		if err != nil {
 			return err
 		}
-		for id := range ids {
+		for _, id := range ids {
 			datasetIDs[id] = struct{}{}
 		}
 	}
@@ -246,9 +266,33 @@ func (b *blockContext) lookupDatasets(indices []*metastorev1.Dataset) error {
 	md.Datasets = md.Datasets[:j]
 	b.obj.SetMetadata(md)
 
-	oteltrace.SpanFromContext(b.ctx).AddEvent("dataset tsdb index lookup complete")
-
+	oteltrace.SpanFromContext(b.ctx).AddEvent("dataset index lookup complete")
 	return nil
+}
+
+func attributeIndexMatchers(matchers []*labels.Matcher) []attributeindex.Matcher {
+	attributes := make([]attributeindex.Matcher, 0, len(matchers))
+	for _, matcher := range matchers {
+		attribute := attributeindex.Matcher{
+			Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: matcher.Name},
+		}
+		switch matcher.Type {
+		case labels.MatchEqual:
+			attribute.Operator = attributeindex.MatchEqual
+			attribute.Value = attributeindex.StringValue(matcher.Value)
+		case labels.MatchNotEqual:
+			attribute.Operator = attributeindex.MatchNotEqual
+			attribute.Value = attributeindex.StringValue(matcher.Value)
+		case labels.MatchRegexp:
+			attribute.Operator = attributeindex.MatchRegexp
+			attribute.Regexp = matcher.Value
+		case labels.MatchNotRegexp:
+			attribute.Operator = attributeindex.MatchNotRegexp
+			attribute.Regexp = matcher.Value
+		}
+		attributes = append(attributes, attribute)
+	}
+	return attributes
 }
 
 func (b *blockContext) newQueryContext(ds *metastorev1.Dataset) *queryContext {

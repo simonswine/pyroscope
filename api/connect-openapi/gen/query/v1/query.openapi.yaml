@@ -830,6 +830,13 @@ components:
         collectDiagnostics:
           type: boolean
           title: collect_diagnostics
+        useAttributeIndex:
+          type: boolean
+          title: use_attribute_index
+          description: |-
+            Use AttributeIndexV1 to resolve profile datasets when it is available.
+             This is an experimental, per-request opt-in; blocks without an attribute
+             index continue to resolve through the tenant-wide TSDB index.
       title: InvokeOptions
       additionalProperties: false
     query.v1.InvokeRequest:
