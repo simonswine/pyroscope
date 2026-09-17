@@ -372,19 +372,30 @@ Primary files:
 
 Tasks:
 
-- [ ] Add an attribute-index builder to each tenant `CompactionPlan`.
-- [ ] Feed it from the merged output-series stream alongside the TSDB builder.
-- [ ] Use output dataset positions, accounting for the actual metadata layout.
-- [ ] Avoid repeating attribute conversion for every row of a series; use
+- [x] Add an attribute-index builder to each tenant `CompactionPlan`.
+- [x] Feed it from the merged output-series stream alongside the TSDB builder.
+- [x] Use output dataset positions, accounting for the actual metadata layout.
+- [x] Avoid repeating attribute conversion for every row of a series; use
       equality-safe run deduplication and reset run state at dataset boundaries.
-- [ ] Do not copy the existing fingerprint-only run check as the attribute
+- [x] Do not copy the existing fingerprint-only run check as the attribute
       index's sole identity test.
-- [ ] Write the attribute pseudo-dataset before final metadata encoding/upload.
-- [ ] Continue skipping anonymous input indexes and rebuild from real contents.
-- [ ] Support old-only, new-only, and mixed old/new inputs without reading input
+- [x] Write the attribute pseudo-dataset before final metadata encoding/upload.
+- [x] Continue skipping anonymous input indexes and rebuild from real contents.
+- [x] Support old-only, new-only, and mixed old/new inputs without reading input
       attribute indexes as a prerequisite.
-- [ ] Preserve the existing compaction publication and deletion lifecycle.
-- [ ] Clean up builders on dataset-open, merge, encoding, and upload failures.
+- [x] Preserve the existing compaction publication and deletion lifecycle.
+- [x] Clean up builders on dataset-open, merge, encoding, and upload failures.
+
+Each plan initializes its bounded `SeriesBuilder` when execution starts and
+closes it on every exit. Merged rows feed both indexes; the attribute run key
+snapshots and compares full labels independently of fingerprints and resets at
+each output dataset boundary. References use the current full output metadata
+length. The attribute payload follows the TSDB payload before metadata encoding
+and the existing single-object upload. Build or encoding failure aborts output
+publication rather than silently omitting the index. Tests compare deterministic
+payloads with an independent rebuild from persisted output TSDB series across
+legacy inputs, repeated generations, and mixed metadata with reordered input
+positions; unit tests force fingerprint collisions and reused label storage.
 
 ### 7. Validate equivalence and compatibility
 

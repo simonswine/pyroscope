@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	phlaremodel "github.com/grafana/pyroscope/v2/pkg/model"
 	"github.com/grafana/pyroscope/v2/pkg/objstore"
@@ -172,13 +174,15 @@ func PlanCompaction(objects Objects) ([]*CompactionPlan, error) {
 }
 
 type CompactionPlan struct {
-	tenant       string
-	path         string
-	datasetMap   map[int32]*datasetCompaction
-	datasets     []*datasetCompaction
-	meta         *metastorev1.BlockMeta
-	strings      *metadata.StringTable
-	datasetIndex *DatasetIndexWriter
+	tenant              string
+	path                string
+	datasetMap          map[int32]*datasetCompaction
+	datasets            []*datasetCompaction
+	meta                *metastorev1.BlockMeta
+	strings             *metadata.StringTable
+	datasetIndex        *DatasetIndexWriter
+	attributeIndex      *attributeindex.SeriesBuilder
+	lastAttributeLabels immutableLabels
 
 	// datasetIndex state for the compaction-time dedup of consecutive
 	// rows that share a fingerprint. The DatasetIndexWriter itself
@@ -218,6 +222,19 @@ func (b *CompactionPlan) Compact(
 	tempdir string,
 	observer SampleObserver,
 ) (m *metastorev1.BlockMeta, err error) {
+	defer b.datasetIndex.Close()
+	b.attributeIndex, err = attributeindex.NewSeriesBuilder(attributeindex.Metadata{
+		Tenant:        b.tenant,
+		EntityKind:    "series",
+		TimeSemantics: attributeindex.TimeLegacyCoarseCoverage,
+	}, attributeindex.DefaultBuilderLimits())
+	if err != nil {
+		return nil, fmt.Errorf("creating attribute index builder: %w", err)
+	}
+	defer func() {
+		b.attributeIndex.Close()
+		b.lastAttributeLabels = nil
+	}()
 	w, err := NewBlockWriter(tempdir)
 	if err != nil {
 		return nil, fmt.Errorf("creating block writer: %w", err)
@@ -227,8 +244,12 @@ func (b *CompactionPlan) Compact(
 	}()
 
 	// Datasets are compacted in a strict order.
-	for i, s := range b.datasets {
-		b.currentDatasetIdx = uint32(i)
+	for _, s := range b.datasets {
+		if uint64(len(b.meta.Datasets)) > math.MaxUint32 {
+			return nil, fmt.Errorf("output dataset position exceeds uint32")
+		}
+		b.currentDatasetIdx = uint32(len(b.meta.Datasets))
+		b.lastAttributeLabels = nil
 		s.registerSampleObserver(observer)
 		if err = s.compact(ctx, w); err != nil {
 			return nil, fmt.Errorf("compacting block: %w", err)
@@ -237,6 +258,9 @@ func (b *CompactionPlan) Compact(
 	}
 	if err = b.writeDatasetIndex(w); err != nil {
 		return nil, fmt.Errorf("writing tenant index: %w", err)
+	}
+	if err = b.writeAttributeIndex(ctx, w); err != nil {
+		return nil, fmt.Errorf("writing attribute index: %w", err)
 	}
 	b.meta.StringTable = b.strings.Strings
 	b.meta.MetadataOffset = w.Offset()
@@ -261,8 +285,34 @@ func (b *CompactionPlan) addRowToDatasetIndex(r ProfileEntry) {
 	}
 }
 
+// addRowToAttributeIndex compares full labels, not fingerprints: distinct series
+// may collide. Snapshot the run key because callers may reuse label storage.
+func (b *CompactionPlan) addRowToAttributeIndex(ctx context.Context, r ProfileEntry) error {
+	if b.lastAttributeLabels != nil && slices.Equal(b.lastAttributeLabels, r.labels) {
+		return ctx.Err()
+	}
+	if err := b.attributeIndex.AddSeriesContext(ctx, b.currentDatasetIdx, r.labels); err != nil {
+		return err
+	}
+	b.lastAttributeLabels = append(b.lastAttributeLabels[:0], r.labels...)
+	return nil
+}
+
+func (b *CompactionPlan) writeAttributeIndex(ctx context.Context, w *Writer) error {
+	if b.attributeIndex.Empty() {
+		return nil
+	}
+	off := w.Offset()
+	n, err := b.attributeIndex.WriteTo(ctx, w)
+	if err != nil {
+		return err
+	}
+	b.meta.Datasets = append(b.meta.Datasets, NewAttributeIndexDataset(
+		b.meta.Tenant, b.meta.MinTime, b.meta.MaxTime, off, uint64(n), b.strings))
+	return nil
+}
+
 func (b *CompactionPlan) writeDatasetIndex(w *Writer) error {
-	defer b.datasetIndex.Close()
 	if b.datasetIndex.Empty() {
 		return nil
 	}
@@ -447,17 +497,20 @@ func (m *datasetCompaction) merge(ctx context.Context) (err error) {
 				return err
 			}
 		}
-		if err = m.writeRow(rows.At()); err != nil {
+		if err = m.writeRow(ctx, rows.At()); err != nil {
 			return err
 		}
 	}
 	return rows.Err()
 }
 
-func (m *datasetCompaction) writeRow(r ProfileEntry) (err error) {
+func (m *datasetCompaction) writeRow(ctx context.Context, r ProfileEntry) (err error) {
 	if m.observer != nil {
 		observe := m.observer.Evaluate(r.View())
 		defer observe()
+	}
+	if err = m.parent.addRowToAttributeIndex(ctx, r); err != nil {
+		return fmt.Errorf("adding attribute index series: %w", err)
 	}
 	m.parent.addRowToDatasetIndex(r)
 	m.indexRewriter.rewriteRow(r)

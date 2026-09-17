@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -16,8 +18,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/metrics"
 	phlaremodel "github.com/grafana/pyroscope/v2/pkg/model"
@@ -49,13 +53,19 @@ func Test_CompactBlocks(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, compactedBlocks, 1)
 	require.NotZero(t, compactedBlocks[0].Size)
-	require.Len(t, compactedBlocks[0].Datasets, 4)
+	require.Len(t, compactedBlocks[0].Datasets, 5)
 
 	compactedJson, err := json.MarshalIndent(compactedBlocks, "", "  ")
 	require.NoError(t, err)
 	expectedJson, err := os.ReadFile("testdata/compacted.golden")
 	require.NoError(t, err)
-	assert.Equal(t, string(expectedJson), string(compactedJson))
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		require.NoError(t, os.WriteFile("testdata/compacted.golden", compactedJson, 0644))
+	} else {
+		assert.Equal(t, string(expectedJson), string(compactedJson))
+	}
+
+	assertCompactedAttributeIndex(t, ctx, dst, compactedBlocks[0])
 
 	t.Run("Compact compacted blocks", func(t *testing.T) {
 		compactedBlocks, err = block.Compact(ctx, compactedBlocks, dst,
@@ -69,7 +79,21 @@ func Test_CompactBlocks(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, compactedBlocks, 1)
 		require.NotZero(t, compactedBlocks[0].Size)
-		require.Len(t, compactedBlocks[0].Datasets, 4)
+		require.Len(t, compactedBlocks[0].Datasets, 5)
+		assertCompactedAttributeIndex(t, ctx, dst, compactedBlocks[0])
+	})
+
+	t.Run("mixed indexed and legacy metadata with reordered dataset positions", func(t *testing.T) {
+		legacy := proto.Clone(compactedBlocks[0]).(*metastorev1.BlockMeta)
+		legacy.Datasets = slices.DeleteFunc(legacy.Datasets, func(ds *metastorev1.Dataset) bool {
+			return block.DatasetFormat(ds.Format) == block.DatasetFormat2
+		})
+		slices.Reverse(legacy.Datasets)
+		mixed, err := block.Compact(ctx, []*metastorev1.BlockMeta{legacy, compactedBlocks[0]}, dst,
+			block.WithCompactionTempDir(tempdir))
+		require.NoError(t, err)
+		require.Len(t, mixed, 1)
+		assertCompactedAttributeIndex(t, ctx, dst, mixed[0])
 	})
 }
 
@@ -204,7 +228,7 @@ func Test_CompactBlocks_recordingRules(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, compactedBlocks, 1)
 	require.NotZero(t, compactedBlocks[0].Size)
-	require.Len(t, compactedBlocks[0].Datasets, 4)
+	require.Len(t, compactedBlocks[0].Datasets, 5)
 
 	expectedMetrics, err := os.ReadFile("testdata/profiles_recorded.txt")
 	require.NoError(t, err)
@@ -310,7 +334,7 @@ func Test_CompactBlocks_recordingRules_shadowedSymbols(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, compactedBlocks, 1)
 	require.NotZero(t, compactedBlocks[0].Size)
-	require.Len(t, compactedBlocks[0].Datasets, 4)
+	require.Len(t, compactedBlocks[0].Datasets, 5)
 
 	expectedMetrics, err := os.ReadFile("testdata/profiles_recorded_shadowed.txt")
 	require.NoError(t, err)
@@ -411,4 +435,56 @@ func Test_Compact_PreservesSeriesLabels(t *testing.T) {
 
 	actual := collectSeriesLabels(ctx, t, dst, compacted)
 	require.Equal(t, expected, actual)
+}
+
+// Rebuild an oracle from persisted output TSDB series, independently of the
+// compaction row stream. Deterministic bytes cover all entities and references.
+func assertCompactedAttributeIndex(t *testing.T, ctx context.Context, bucket objstore.Bucket, md *metastorev1.BlockMeta) {
+	t.Helper()
+	builder, err := attributeindex.NewSeriesBuilder(attributeindex.Metadata{
+		Tenant: md.StringTable[md.Tenant], EntityKind: "series", TimeSemantics: attributeindex.TimeLegacyCoarseCoverage,
+	}, attributeindex.DefaultBuilderLimits())
+	require.NoError(t, err)
+	defer builder.Close()
+	obj := block.NewObject(bucket, md)
+	require.NoError(t, obj.Open(ctx))
+	defer obj.Close()
+	var attr *metastorev1.Dataset
+	for id, meta := range md.Datasets {
+		if block.DatasetFormat(meta.Format) == block.DatasetFormat2 {
+			attr = meta
+			continue
+		}
+		if meta.Name == 0 {
+			continue
+		}
+		ds := block.NewDataset(meta, obj)
+		require.NoError(t, ds.Open(ctx, block.SectionTSDB))
+		k, v := index.AllPostingsKey()
+		postings, err := ds.Index().Postings(k, nil, v)
+		require.NoError(t, err)
+		var lbls phlaremodel.Labels
+		var chunks []index.ChunkMeta
+		for postings.Next() {
+			_, err := ds.Index().Series(postings.At(), &lbls, &chunks)
+			require.NoError(t, err)
+			require.NoError(t, builder.AddSeries(uint32(id), lbls))
+		}
+		require.NoError(t, postings.Err())
+		require.NoError(t, ds.Close())
+	}
+	require.NotNil(t, attr)
+	require.Equal(t, md.MinTime, attr.MinTime)
+	require.Equal(t, md.MaxTime, attr.MaxTime)
+	expected, err := builder.Bytes(ctx)
+	require.NoError(t, err)
+	r, err := bucket.GetRange(ctx, block.ObjectPath(md), int64(attr.TableOfContents[0]), int64(attr.Size))
+	require.NoError(t, err)
+	actual, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	require.Equal(t, expected, actual)
+	ds := block.NewDataset(attr, obj)
+	require.NoError(t, ds.Open(ctx, block.SectionAttributeIndex))
+	require.NoError(t, ds.Close())
 }
