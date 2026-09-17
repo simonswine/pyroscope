@@ -27,6 +27,7 @@ import (
 	phlaremodel "github.com/grafana/pyroscope/v2/pkg/model"
 	"github.com/grafana/pyroscope/v2/pkg/objstore"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/testutil"
+	"github.com/grafana/pyroscope/v2/pkg/phlaredb"
 	"github.com/grafana/pyroscope/v2/pkg/phlaredb/tsdb/index"
 	"github.com/grafana/pyroscope/v2/pkg/test/mocks/mockmetrics"
 )
@@ -95,6 +96,94 @@ func Test_CompactBlocks(t *testing.T) {
 		require.Len(t, mixed, 1)
 		assertCompactedAttributeIndex(t, ctx, dst, mixed[0])
 	})
+}
+
+// Test_CompactAttributeIndexLookupParity verifies that the rebuilt attribute
+// index makes the same dataset selections as the per-dataset TSDB indexes.
+// It covers inputs without an attribute index, inputs that already have one,
+// and a mixture of both. Recompacting the result additionally verifies that
+// references are rebuilt using the new global dataset positions each time.
+func Test_CompactAttributeIndexLookupParity(t *testing.T) {
+	ctx := context.Background()
+	src, _ := testutil.NewFilesystemBucket(t, ctx, "testdata")
+	var response metastorev1.GetBlockMetadataResponse
+	raw, err := os.ReadFile("testdata/block-metas.json")
+	require.NoError(t, err)
+	require.NoError(t, protojson.Unmarshal(raw, &response))
+
+	dst, tempdir := testutil.NewFilesystemBucket(t, ctx, t.TempDir())
+	compact := func(input []*metastorev1.BlockMeta, storage objstore.Bucket) []*metastorev1.BlockMeta {
+		t.Helper()
+		output, err := block.Compact(ctx, input, storage,
+			block.WithCompactionDestination(dst),
+			block.WithCompactionTempDir(tempdir))
+		require.NoError(t, err)
+		require.Len(t, output, 1)
+		assertCompactedAttributeIndexLookupParity(t, ctx, dst, output[0])
+		return output
+	}
+
+	// The fixture predates attribute indexes, so this is an old-only input.
+	first := compact(response.Blocks, src)
+	// This is a new-only input, and each generation must remap references.
+	second := compact(first, dst)
+	third := compact(second, dst)
+	// Compaction supports a rolling upgrade where legacy and indexed metadata
+	// for objects in the same storage meet. Reordering makes their positions
+	// differ from the indexed input's original positions.
+	legacy := proto.Clone(first[0]).(*metastorev1.BlockMeta)
+	legacy.Datasets = slices.DeleteFunc(legacy.Datasets, func(dataset *metastorev1.Dataset) bool {
+		return block.DatasetFormat(dataset.Format) == block.DatasetFormat2
+	})
+	slices.Reverse(legacy.Datasets)
+	compact([]*metastorev1.BlockMeta{legacy, third[0]}, dst)
+}
+
+func assertCompactedAttributeIndexLookupParity(t *testing.T, ctx context.Context, bucket objstore.Bucket, md *metastorev1.BlockMeta) {
+	t.Helper()
+	obj := block.NewObject(bucket, md)
+	require.NoError(t, obj.Open(ctx))
+	defer obj.Close()
+
+	for _, attributeMeta := range md.Datasets {
+		if block.DatasetFormat(attributeMeta.Format) != block.DatasetFormat2 {
+			continue
+		}
+		attribute := block.NewDataset(attributeMeta, obj)
+		require.NoError(t, attribute.Open(ctx, block.SectionAttributeIndex))
+		for _, tc := range []struct {
+			name      string
+			attribute []attributeindex.Matcher
+			tsdb      []*labels.Matcher
+		}{
+			{"profile type", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "__profile_type__"}, Operator: attributeindex.MatchNotEqual, Value: attributeindex.StringValue("")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchNotEqual, "__profile_type__", "")}},
+			{"profile type regexp", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "__profile_type__"}, Operator: attributeindex.MatchRegexp, Regexp: ".+"}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchRegexp, "__profile_type__", ".+")}},
+			{"missing equals empty", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "missing"}, Operator: attributeindex.MatchEqual, Value: attributeindex.StringValue("")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "missing", "")}},
+			{"missing not equals empty", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "missing"}, Operator: attributeindex.MatchNotEqual, Value: attributeindex.StringValue("")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchNotEqual, "missing", "")}},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", attributeMeta.String(), tc.name), func(t *testing.T) {
+				got, err := attribute.AttributeIndex().DatasetIDs(ctx, tc.attribute)
+				require.NoError(t, err)
+				want := make([]uint32, 0)
+				for id, datasetMeta := range md.Datasets {
+					if block.DatasetFormat(datasetMeta.Format) != block.DatasetFormat0 || datasetMeta.Name == 0 || datasetMeta.Tenant != attributeMeta.Tenant {
+						continue
+					}
+					dataset := block.NewDataset(datasetMeta, obj)
+					require.NoError(t, dataset.Open(ctx, block.SectionTSDB))
+					postings, err := phlaredb.PostingsForMatchers(dataset.Index(), nil, tc.tsdb...)
+					require.NoError(t, err)
+					if postings.Next() {
+						want = append(want, uint32(id))
+					}
+					require.NoError(t, postings.Err())
+					require.NoError(t, dataset.Close())
+				}
+				assert.Equal(t, want, got, tc.name)
+			})
+		}
+		require.NoError(t, attribute.Close())
+	}
 }
 
 func Test_CompactBlocks_recordingRules(t *testing.T) {
