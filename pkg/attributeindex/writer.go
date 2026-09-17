@@ -11,8 +11,10 @@ import (
 // Writer builds an immutable AttributeIndexV1 object. Writer is not safe for
 // concurrent use.
 type Writer struct {
-	metadata Metadata
-	entities []Entity
+	metadata          Metadata
+	entities          []Entity
+	entityDatasetIDs  [][]uint32
+	hasDatasetMapping bool
 }
 
 func NewWriter(metadata Metadata) (*Writer, error) {
@@ -45,36 +47,69 @@ func (w *Writer) AddEntity(entity Entity) error {
 		}
 	}
 	w.entities = append(w.entities, Entity{Attributes: attributes})
+	w.entityDatasetIDs = append(w.entityDatasetIDs, nil)
 	return nil
 }
 
-// Bytes returns a complete attributes.bin object. Identical writer input has a
+// AddEntityWithDatasets associates a complete entity with the real dataset
+// positions containing it. References must be sorted and unique on disk;
+// callers may supply them in any order.
+func (w *Writer) AddEntityWithDatasets(entity Entity, datasetIDs []uint32) error {
+	if len(datasetIDs) == 0 {
+		return fmt.Errorf("attribute index entity must reference at least one dataset")
+	}
+	if err := w.AddEntity(entity); err != nil {
+		return err
+	}
+	ids := slices.Clone(datasetIDs)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	w.entityDatasetIDs[len(w.entityDatasetIDs)-1] = ids
+	w.hasDatasetMapping = true
+	return nil
+}
+
+// Bytes returns a complete attribute-index payload. Identical writer input has a
 // deterministic encoding. The entity payload is one independently verifiable
 // page in this initial primitive; the directory permits row-group paging to be
 // added without changing the footer contract.
 func (w *Writer) Bytes() ([]byte, error) {
-	entityPage, err := encodeEntities(w.entities)
+	entities, mappings, err := w.entitiesForEncoding()
 	if err != nil {
 		return nil, err
 	}
-	keys := w.keys()
-	dictionaries, err := buildDictionaries(keys, w.entities)
+	entityPage, err := encodeEntities(entities)
 	if err != nil {
 		return nil, err
 	}
-	postingsPage, err := encodePostings(keys, dictionaries, w.entities)
+	keys := keysForEntities(entities)
+	dictionaries, err := buildDictionaries(keys, entities)
 	if err != nil {
 		return nil, err
 	}
-	columnPages, err := encodeForwardColumns(keys, dictionaries, w.entities)
+	postingsPage, err := encodePostings(keys, dictionaries, entities)
 	if err != nil {
 		return nil, err
+	}
+	columnPages, err := encodeForwardColumns(keys, dictionaries, entities)
+	if err != nil {
+		return nil, err
+	}
+	var mappingPage []byte
+	if w.hasDatasetMapping {
+		mappingPage, err = encodeDatasetMappings(mappings)
+		if err != nil {
+			return nil, err
+		}
 	}
 	object := make([]byte, headerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
-	binary.LittleEndian.PutUint32(object[12:16], uint32(len(w.entities)))
-	pages := make([]pageDescriptor, 0, len(columnPages)+3)
+	if w.hasDatasetMapping {
+		binary.LittleEndian.PutUint16(object[10:12], featureDatasetMappings)
+	}
+	binary.LittleEndian.PutUint32(object[12:16], uint32(len(entities)))
+	pages := make([]pageDescriptor, 0, len(columnPages)+4)
 	appendPage := func(kind pageKind, keyID uint32, data []byte) error {
 		if len(data) > maxPageLen {
 			return fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
@@ -97,21 +132,63 @@ func (w *Writer) Bytes() ([]byte, error) {
 			return nil, err
 		}
 	}
+	if w.hasDatasetMapping {
+		if err := appendPage(pageDatasetMapping, ^uint32(0), mappingPage); err != nil {
+			return nil, err
+		}
+	}
 	directoryOffset := int64(len(object))
 	directory := encodeDirectory(w.metadata, keys, pages)
 	object = append(object, directory...)
 	var footer [footerSize]byte
 	copy(footer[:8], footerMagic[:])
 	binary.LittleEndian.PutUint16(footer[8:10], Version)
+	if w.hasDatasetMapping {
+		binary.LittleEndian.PutUint16(footer[10:12], featureDatasetMappings)
+	}
 	binary.LittleEndian.PutUint64(footer[12:20], uint64(directoryOffset))
 	binary.LittleEndian.PutUint32(footer[20:24], uint32(len(directory)))
 	binary.LittleEndian.PutUint32(footer[24:28], checksum(directory))
 	return append(object, footer[:]...), nil
 }
 
-func (w *Writer) keys() []Key {
+func (w *Writer) entitiesForEncoding() ([]Entity, [][]uint32, error) {
+	if !w.hasDatasetMapping {
+		return w.entities, nil, nil
+	}
+	type entry struct {
+		entity Entity
+		ids    []uint32
+	}
+	entries := make([]entry, len(w.entities))
+	for i := range w.entities {
+		if len(w.entityDatasetIDs[i]) == 0 {
+			return nil, nil, fmt.Errorf("entity %d is missing dataset mappings", i)
+		}
+		entries[i] = entry{entity: w.entities[i], ids: w.entityDatasetIDs[i]}
+	}
+	slices.SortFunc(entries, func(a, b entry) int { return compareEntity(a.entity, b.entity) })
+	entities := make([]Entity, 0, len(entries))
+	mappings := make([][]uint32, 0, len(entries))
+	for _, entry := range entries {
+		if len(entities) > 0 && compareEntity(entities[len(entities)-1], entry.entity) == 0 {
+			last := len(mappings) - 1
+			mappings[last] = append(mappings[last], entry.ids...)
+			continue
+		}
+		entities = append(entities, entry.entity)
+		mappings = append(mappings, slices.Clone(entry.ids))
+	}
+	for i := range mappings {
+		slices.Sort(mappings[i])
+		mappings[i] = slices.Compact(mappings[i])
+	}
+	return entities, mappings, nil
+}
+
+func keysForEntities(entities []Entity) []Key {
 	keys := make([]Key, 0)
-	for _, entity := range w.entities {
+	for _, entity := range entities {
 		for _, attribute := range entity.Attributes {
 			keys = append(keys, attribute.Key)
 		}
@@ -191,6 +268,29 @@ func appendPosting(b []byte, posting []uint32) []byte {
 	return b
 }
 
+func encodeDatasetMappings(mappings [][]uint32) ([]byte, error) {
+	b := appendUvarint(nil, uint64(len(mappings)))
+	for entityID, ids := range mappings {
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("entity %d has no dataset mappings", entityID)
+		}
+		b = appendUvarint(b, uint64(len(ids)))
+		var previous uint32
+		for i, id := range ids {
+			if i > 0 && id <= previous {
+				return nil, fmt.Errorf("entity %d dataset mappings are not strictly sorted", entityID)
+			}
+			delta := id
+			if i > 0 {
+				delta -= previous
+			}
+			b = appendUvarint(b, uint64(delta))
+			previous = id
+		}
+	}
+	return b, nil
+}
+
 // encodeForwardColumns stores a dictionary-local value ID for every key and
 // entity. Zero is ABSENT; nonzero IDs are the dictionary index plus one.
 func encodeForwardColumns(keys []Key, dictionaries [][]Value, entities []Entity) ([][]byte, error) {
@@ -259,6 +359,42 @@ func decodeForwardColumns(page []byte, dictionaries [][]Value) ([][]uint32, erro
 		return nil, fmt.Errorf("trailing forward column page bytes")
 	}
 	return columns, nil
+}
+
+func decodeDatasetMappings(page []byte, entityCount uint32) ([][]uint32, error) {
+	r := bytes.NewReader(page)
+	count, err := readUvarint(r)
+	if err != nil || count != uint64(entityCount) {
+		return nil, fmt.Errorf("invalid dataset mapping entity count %d", count)
+	}
+	mappings := make([][]uint32, entityCount)
+	for entityID := range mappings {
+		count, err := readUvarint(r)
+		if err != nil || count == 0 || count > 1<<32-1 {
+			return nil, fmt.Errorf("invalid dataset reference count for entity %d: %d", entityID, count)
+		}
+		mappings[entityID] = make([]uint32, count)
+		var previous uint32
+		for i := range mappings[entityID] {
+			delta, err := readUvarint(r)
+			if err != nil || delta > uint64(^uint32(0)) || (i > 0 && uint64(previous)+delta > uint64(^uint32(0))) {
+				return nil, fmt.Errorf("invalid dataset reference for entity %d", entityID)
+			}
+			id := uint32(delta)
+			if i > 0 {
+				id += previous
+				if id <= previous {
+					return nil, fmt.Errorf("dataset references for entity %d are not strictly sorted", entityID)
+				}
+			}
+			mappings[entityID][i] = id
+			previous = id
+		}
+	}
+	if _, err := r.ReadByte(); err != io.EOF {
+		return nil, fmt.Errorf("trailing dataset mapping page bytes")
+	}
+	return mappings, nil
 }
 
 func decodePostings(page []byte, dictionaries [][]Value) ([][][]uint32, error) {

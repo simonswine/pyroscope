@@ -18,13 +18,14 @@ type RangeSource interface {
 // Reader owns query-lifetime decoded pages. Returned data is cloned, so callers
 // cannot retain a view into a reader-owned buffer.
 type Reader struct {
-	source      RangeSource
-	object      string
-	size        int64
-	entityCount uint32
-	metadata    Metadata
-	keys        []Key
-	pages       []pageDescriptor
+	source           RangeSource
+	object           string
+	size             int64
+	entityCount      uint32
+	requiredFeatures uint16
+	metadata         Metadata
+	keys             []Key
+	pages            []pageDescriptor
 
 	mu              sync.Mutex
 	entities        []Entity
@@ -35,6 +36,8 @@ type Reader struct {
 	hasPostings     bool
 	columns         [][]uint32
 	hasColumns      bool
+	datasetMappings [][]uint32
+	hasDatasetMaps  bool
 	closed          bool
 
 	// Memory budget tracking for decoded/cached data
@@ -65,6 +68,10 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	if string(footer[:8]) != string(footerMagic[:]) || binary.LittleEndian.Uint16(footer[8:10]) != Version {
 		return nil, fmt.Errorf("unsupported attribute index footer")
 	}
+	requiredFeatures := binary.LittleEndian.Uint16(header[10:12])
+	if requiredFeatures != binary.LittleEndian.Uint16(footer[10:12]) || requiredFeatures&^featureDatasetMappings != 0 {
+		return nil, fmt.Errorf("unsupported attribute index required features %d", requiredFeatures)
+	}
 	directoryOffset := int64(binary.LittleEndian.Uint64(footer[12:20]))
 	directoryLength := int64(binary.LittleEndian.Uint32(footer[20:24]))
 	if directoryOffset < headerSize || directoryLength <= 0 || directoryOffset > size-footerSize-directoryLength {
@@ -80,6 +87,16 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	metadata, keys, pages, err := decodeDirectory(directory)
 	if err != nil {
 		return nil, fmt.Errorf("decoding root directory: %w", err)
+	}
+	mappingPages := 0
+	for _, page := range pages {
+		if page.kind == pageDatasetMapping {
+			mappingPages++
+		}
+	}
+	if (requiredFeatures&featureDatasetMappings != 0 && mappingPages != 1) ||
+		(requiredFeatures&featureDatasetMappings == 0 && mappingPages != 0) {
+		return nil, fmt.Errorf("invalid dataset mapping feature and page combination")
 	}
 	for i, page := range pages {
 		if int64(page.length) > size-page.offset || page.offset+int64(page.length) > directoryOffset {
@@ -97,24 +114,81 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	// This is separate from FetchRanges in-flight budget
 	maxDecodedBytes := int64(256 << 20)
 	return &Reader{
-		source:          source,
-		object:          object,
-		size:            size,
-		entityCount:     entityCount,
-		metadata:        metadata,
-		keys:            keys,
-		pages:           pages,
-		maxDecodedBytes: maxDecodedBytes,
+		source:           source,
+		object:           object,
+		size:             size,
+		entityCount:      entityCount,
+		requiredFeatures: requiredFeatures,
+		metadata:         metadata,
+		keys:             keys,
+		pages:            pages,
+		maxDecodedBytes:  maxDecodedBytes,
 	}, nil
 }
 
 func (r *Reader) Metadata() Metadata { return r.metadata }
 
-// DatasetIDs deliberately returns an error for AttributeIndexV1 rather than an
-// empty result: version 1 payloads predate entity-to-dataset mappings. A later
-// mapping-capable format will implement selector-to-dataset lookup here.
-func (r *Reader) DatasetIDs(_ context.Context, _ []Matcher) ([]uint32, error) {
-	return nil, ErrDatasetMappingsUnavailable
+// DatasetIDs applies all matchers to complete entities, then returns the
+// sorted, unique real containing-block dataset positions they reference.
+// Payloads without the required mapping feature return an explicit error.
+func (r *Reader) DatasetIDs(ctx context.Context, matchers []Matcher) ([]uint32, error) {
+	mappings, err := r.DatasetMappings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	candidate, _, _, err := r.candidateIDsSelective(ctx, matchers, []Key{})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uint32, 0)
+	for entityID, matches := range candidate {
+		if matches {
+			ids = append(ids, mappings[entityID]...)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids), nil
+}
+
+// DatasetMappings returns the real containing-block dataset positions for each
+// entity. It is intentionally separate from Entities so discovery results never
+// expose dataset references as attributes.
+func (r *Reader) DatasetMappings(ctx context.Context) ([][]uint32, error) {
+	if r.requiredFeatures&featureDatasetMappings == 0 {
+		return nil, ErrDatasetMappingsUnavailable
+	}
+	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	if r.hasDatasetMaps {
+		mappings := cloneDatasetMappings(r.datasetMappings)
+		r.mu.Unlock()
+		return mappings, nil
+	}
+	r.mu.Unlock()
+	pageIdx, ok := r.pageIndex(pageDatasetMapping, ^uint32(0))
+	if !ok {
+		return nil, fmt.Errorf("AttributeIndexV1 requires a dataset mapping page")
+	}
+	pages, err := r.fetchPages(ctx, []int{pageIdx})
+	if err != nil {
+		return nil, fmt.Errorf("fetching dataset mapping page: %w", err)
+	}
+	mappings, err := decodeDatasetMappings(pages[0], r.entityCount)
+	if err != nil {
+		return nil, fmt.Errorf("decoding dataset mapping page: %w", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.ensureOpen(); err != nil {
+		return nil, err
+	}
+	if !r.hasDatasetMaps {
+		r.datasetMappings, r.hasDatasetMaps = mappings, true
+	}
+	return cloneDatasetMappings(r.datasetMappings), nil
 }
 
 // Close releases all decoded query-lifetime pages. It does not close the
@@ -126,6 +200,7 @@ func (r *Reader) Close() error {
 	r.dictionaries, r.hasDictionaries = nil, false
 	r.postings, r.hasPostings = nil, false
 	r.columns, r.hasColumns = nil, false
+	r.datasetMappings, r.hasDatasetMaps = nil, false
 	r.decodedBytes = 0
 	r.closed = true
 	return nil
@@ -493,6 +568,14 @@ func (r *Reader) readPage(ctx context.Context, page pageDescriptor, name string)
 		return nil, fmt.Errorf("%s page checksum mismatch", name)
 	}
 	return data, nil
+}
+
+func cloneDatasetMappings(mappings [][]uint32) [][]uint32 {
+	result := make([][]uint32, len(mappings))
+	for i := range mappings {
+		result[i] = slices.Clone(mappings[i])
+	}
+	return result
 }
 
 func cloneEntities(entities []Entity) []Entity {

@@ -118,6 +118,45 @@ func TestAttributeIndexV1_DatasetLookupRequiresMappings(t *testing.T) {
 	require.Nil(t, datasetIDs)
 }
 
+func TestAttributeIndexV1_DatasetLookup(t *testing.T) {
+	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
+	require.NoError(t, err)
+	require.NoError(t, writer.AddEntityWithDatasets(Entity{Attributes: []Attribute{{Key: Key{Scope: ScopeLegacy, Name: "service"}, Value: StringValue("api")}}}, []uint32{7, 3, 7}))
+	require.NoError(t, writer.AddEntityWithDatasets(Entity{Attributes: []Attribute{{Key: Key{Scope: ScopeLegacy, Name: "service"}, Value: StringValue("api")}}}, []uint32{5, 3}))
+	data, err := writer.Bytes()
+	require.NoError(t, err)
+
+	reader, err := Open(context.Background(), &memoryRanges{data: data}, PayloadName, int64(len(data)))
+	require.NoError(t, err)
+	ids, err := reader.DatasetIDs(context.Background(), []Matcher{{Key: Key{Scope: ScopeLegacy, Name: "service"}, Operator: MatchEqual, Value: StringValue("api")}})
+	require.NoError(t, err)
+	require.Equal(t, []uint32{3, 5, 7}, ids)
+	mappings, err := reader.DatasetMappings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, [][]uint32{{3, 5, 7}}, mappings)
+}
+
+func TestAttributeIndexV1_DeterministicDatasetMapping(t *testing.T) {
+	metadata := Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage}
+	entityA := Entity{Attributes: []Attribute{{Key: Key{Scope: ScopeLegacy, Name: "service"}, Value: StringValue("api")}}}
+	entityB := Entity{Attributes: []Attribute{{Key: Key{Scope: ScopeLegacy, Name: "service"}, Value: StringValue("worker")}}}
+	first, err := NewWriter(metadata)
+	require.NoError(t, err)
+	require.NoError(t, first.AddEntityWithDatasets(entityB, []uint32{9}))
+	require.NoError(t, first.AddEntityWithDatasets(entityA, []uint32{4}))
+	require.NoError(t, first.AddEntityWithDatasets(entityA, []uint32{2, 4}))
+	second, err := NewWriter(metadata)
+	require.NoError(t, err)
+	require.NoError(t, second.AddEntityWithDatasets(entityA, []uint32{4, 2}))
+	require.NoError(t, second.AddEntityWithDatasets(entityB, []uint32{9}))
+	require.NoError(t, second.AddEntityWithDatasets(entityA, []uint32{4}))
+	firstBytes, err := first.Bytes()
+	require.NoError(t, err)
+	secondBytes, err := second.Bytes()
+	require.NoError(t, err)
+	require.Equal(t, firstBytes, secondBytes)
+}
+
 func TestAttributeIndexV1_RejectsCorruptPage(t *testing.T) {
 	writer, err := NewWriter(Metadata{Tenant: "tenant-a", EntityKind: "series", TimeSemantics: TimeLegacyCoarseCoverage})
 	require.NoError(t, err)

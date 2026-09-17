@@ -21,6 +21,11 @@ const (
 	headerSize = 16
 	footerSize = 32
 	maxPageLen = 64 << 20
+
+	// featureDatasetMappings is required for selector-to-dataset lookup.
+	// AttributeIndexV1 payloads without it are rejected, not treated as an
+	// empty mapping.
+	featureDatasetMappings = uint16(1 << iota)
 )
 
 type pageKind uint8
@@ -30,6 +35,7 @@ const (
 	pageDictionary
 	pagePostings
 	pageForwardColumn
+	pageDatasetMapping
 )
 
 type pageDescriptor struct {
@@ -153,7 +159,7 @@ func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
 			return Metadata{}, nil, nil, fmt.Errorf("reading page descriptor: %w", err)
 		}
 		pages[i] = pageDescriptor{kind: pageKind(fixed[0]), keyID: binary.LittleEndian.Uint32(fixed[4:8]), offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]), crc32: binary.LittleEndian.Uint32(fixed[20:24])}
-		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings && pages[i].kind != pageForwardColumn) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
+		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings && pages[i].kind != pageForwardColumn && pages[i].kind != pageDatasetMapping) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
 			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
 		}
 	}

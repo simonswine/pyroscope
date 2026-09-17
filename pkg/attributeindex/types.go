@@ -19,11 +19,9 @@ const (
 	// FormatName identifies this payload format in documentation and errors.
 	FormatName = "AttributeIndexV1"
 
-	// Version is the AttributeIndexV1 payload version. It has no
-	// entity-to-dataset mapping and must therefore never be used for
-	// selector-to-dataset lookup; a mapping-capable encoding will use a new
-	// version or a required feature flag. The distinct AttributeIndexV1 magic
-	// intentionally rejects old standalone attribute-block prototype payloads.
+	// Version identifies the AttributeIndexV1 payload layout. Required features
+	// distinguish compatible extensions, such as dataset mappings, without
+	// changing the format version.
 	Version = uint16(1)
 
 	// PayloadName is a diagnostic name for a standalone payload source, primarily

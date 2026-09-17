@@ -165,24 +165,47 @@ dictionary remapping. That is outside this milestone.
 > magic intentionally changed from `ATTRBLK`/`ATTRFTR` to `ATTRIDX`/`ATTRIFT`.
 > This is a breaking change: readers reject old standalone prototype payloads;
 > they cannot be mistaken for mapping-capable attribute indexes. The payload
-> version remains 1 because no encoding layout has changed.
+> version remains 1; mapping-capable payloads instead require the explicit
+> dataset-mappings feature bit.
 
 ### 2. Add dataset mapping to the encoding and reader
 
-- [ ] Add independently readable entity-to-dataset mapping pages and directory
+- [x] Add independently readable entity-to-dataset mapping pages and directory
       descriptors, with sorted, unique references per entity.
-- [ ] Define and validate counts, entity coverage, reference encoding, offsets,
+- [x] Define and validate counts, entity coverage, reference encoding, offsets,
       checksums, and integer limits before allocation or conversion.
-- [ ] Extend writer input to associate entities with dataset references.
-- [ ] Deduplicate canonical entities and union their references.
-- [ ] Keep output deterministic for equivalent logical input, including input
+- [x] Extend writer input to associate entities with dataset references.
+- [x] Deduplicate canonical entities and union their references.
+- [x] Keep output deterministic for equivalent logical input, including input
       order changes.
-- [ ] Expose a selector-to-dataset reader API returning sorted, unique IDs.
-- [ ] Reuse candidate-entity evaluation rather than reconstructing every
+- [x] Expose a selector-to-dataset reader API returning sorted, unique IDs.
+- [x] Reuse candidate-entity evaluation rather than reconstructing every
       matching attribute set to perform dataset lookup.
 - [ ] Validate block-relative references and tenant ownership in the block
       integration layer, where full block metadata is available.
-- [ ] Preserve existing attribute-discovery and projection behavior.
+- [x] Preserve existing attribute-discovery and projection behavior.
+
+#### Current encoding status
+
+`AttributeIndexV1` remains at wire version 1. The incompatible
+entity-to-dataset mapping addition is identified by the required
+`dataset-mappings` feature bit in both the header and footer, rather than a
+version bump. A feature-enabled payload contains exactly one independently
+checksummed dataset-mapping page. That page contains one non-empty,
+delta-encoded, strictly sorted dataset-reference list per entity.
+
+`Writer.AddEntityWithDatasets` is the mapping-aware input. At encoding time it
+sorts entities by complete canonical attribute content, deduplicates equal
+entities, and unions their dataset references; equivalent logical inputs
+therefore receive deterministic local entity IDs and bytes. The original
+`AddEntity` remains available for attribute-discovery-only prototype payloads:
+it writes no mapping feature or page, and `DatasetIDs` returns
+`ErrDatasetMappingsUnavailable` rather than treating that absence as an empty
+lookup. New block integration must use the mapping-aware input.
+
+Block-relative reference bounds, pseudo-dataset exclusion, and tenant ownership
+remain deliberately deferred until block integration, where complete
+`BlockMeta.Datasets` is available.
 
 ### 2a. Add per-page Zstd compression
 
