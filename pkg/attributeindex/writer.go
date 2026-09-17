@@ -6,7 +6,23 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
+
+	"github.com/klauspost/compress/zstd"
 )
+
+var attributeIndexEncoders = sync.Pool{
+	New: func() any {
+		encoder, err := zstd.NewWriter(nil,
+			zstd.WithEncoderLevel(zstd.SpeedFastest),
+			zstd.WithEncoderConcurrency(1),
+		)
+		if err != nil {
+			panic(fmt.Sprintf("creating AttributeIndexV1 Zstd encoder: %v", err))
+		}
+		return encoder
+	},
+}
 
 // Writer builds an immutable AttributeIndexV1 object. Writer is not safe for
 // concurrent use.
@@ -102,20 +118,33 @@ func (w *Writer) Bytes() ([]byte, error) {
 			return nil, err
 		}
 	}
+	features := featurePageCompression
+	if w.hasDatasetMapping {
+		features |= featureDatasetMappings
+	}
 	object := make([]byte, headerSize)
 	copy(object, headerMagic[:])
 	binary.LittleEndian.PutUint16(object[8:10], Version)
-	if w.hasDatasetMapping {
-		binary.LittleEndian.PutUint16(object[10:12], featureDatasetMappings)
-	}
+	binary.LittleEndian.PutUint16(object[10:12], features)
 	binary.LittleEndian.PutUint32(object[12:16], uint32(len(entities)))
 	pages := make([]pageDescriptor, 0, len(columnPages)+4)
+	encoder := attributeIndexEncoders.Get().(*zstd.Encoder)
+	defer attributeIndexEncoders.Put(encoder)
 	appendPage := func(kind pageKind, keyID uint32, data []byte) error {
 		if len(data) > maxPageLen {
-			return fmt.Errorf("attribute page exceeds limit %d", maxPageLen)
+			return fmt.Errorf("attribute page decoded length %d exceeds limit %d", len(data), maxPageLen)
 		}
-		pages = append(pages, pageDescriptor{kind: kind, keyID: keyID, offset: int64(len(object)), length: uint32(len(data)), crc32: checksum(data)})
-		object = append(object, data...)
+		// Every data page is a self-contained frame. In particular, no frame
+		// inherits a dictionary or state from a preceding page.
+		encoded := encoder.EncodeAll(data, nil)
+		if len(encoded) == 0 || len(encoded) > maxPageLen {
+			return fmt.Errorf("attribute page encoded length %d exceeds limit %d", len(encoded), maxPageLen)
+		}
+		pages = append(pages, pageDescriptor{
+			kind: kind, codec: pageCodecZstd, keyID: keyID, offset: int64(len(object)),
+			length: uint32(len(encoded)), decodedLength: uint32(len(data)), crc32: checksum(encoded),
+		})
+		object = append(object, encoded...)
 		return nil
 	}
 	if err := appendPage(pageEntity, ^uint32(0), entityPage); err != nil {
@@ -143,9 +172,7 @@ func (w *Writer) Bytes() ([]byte, error) {
 	var footer [footerSize]byte
 	copy(footer[:8], footerMagic[:])
 	binary.LittleEndian.PutUint16(footer[8:10], Version)
-	if w.hasDatasetMapping {
-		binary.LittleEndian.PutUint16(footer[10:12], featureDatasetMappings)
-	}
+	binary.LittleEndian.PutUint16(footer[10:12], features)
 	binary.LittleEndian.PutUint64(footer[12:20], uint64(directoryOffset))
 	binary.LittleEndian.PutUint32(footer[20:24], uint32(len(directory)))
 	binary.LittleEndian.PutUint32(footer[24:28], checksum(directory))

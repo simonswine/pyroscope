@@ -20,12 +20,26 @@ var (
 const (
 	headerSize = 16
 	footerSize = 32
+	// maxPageLen bounds both the stored Zstd frame and its decoded page.
+	// Keeping these bounds equal makes the maximum working set straightforward
+	// to account for and prevents a small compressed frame from requesting an
+	// unbounded allocation.
 	maxPageLen = 64 << 20
 
 	// featureDatasetMappings is required for selector-to-dataset lookup.
 	// AttributeIndexV1 payloads without it are rejected, not treated as an
 	// empty mapping.
 	featureDatasetMappings = uint16(1 << iota)
+	// featurePageCompression changes directory descriptors to include a page
+	// codec and decoded length. It is deliberately a required feature: older
+	// readers cannot mistake a compressed frame for a legacy raw page.
+	featurePageCompression
+)
+
+type pageCodec uint8
+
+const (
+	pageCodecZstd pageCodec = iota + 1
 )
 
 type pageKind uint8
@@ -39,11 +53,13 @@ const (
 )
 
 type pageDescriptor struct {
-	kind   pageKind
-	keyID  uint32 // ^uint32(0) denotes a page that is not key-specific.
-	offset int64
-	length uint32
-	crc32  uint32
+	kind          pageKind
+	codec         pageCodec
+	keyID         uint32 // ^uint32(0) denotes a page that is not key-specific.
+	offset        int64
+	length        uint32 // Encoded/stored length.
+	decodedLength uint32
+	crc32         uint32 // Checksum of encoded/stored bytes.
 }
 
 func appendUvarint(dst []byte, n uint64) []byte {
@@ -104,12 +120,14 @@ func encodeDirectory(metadata Metadata, keys []Key, pages []pageDescriptor) []by
 	}
 	b = appendUvarint(b, uint64(len(pages)))
 	for _, page := range pages {
-		var fixed [24]byte
+		var fixed [32]byte
 		fixed[0] = byte(page.kind)
+		fixed[1] = byte(page.codec)
 		binary.LittleEndian.PutUint32(fixed[4:8], page.keyID)
 		binary.LittleEndian.PutUint64(fixed[8:16], uint64(page.offset))
 		binary.LittleEndian.PutUint32(fixed[16:20], page.length)
-		binary.LittleEndian.PutUint32(fixed[20:24], page.crc32)
+		binary.LittleEndian.PutUint32(fixed[20:24], page.decodedLength)
+		binary.LittleEndian.PutUint32(fixed[24:28], page.crc32)
 		b = append(b, fixed[:]...)
 	}
 	return b
@@ -154,12 +172,20 @@ func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
 	}
 	pages := make([]pageDescriptor, count)
 	for i := range pages {
-		var fixed [24]byte
+		var fixed [32]byte
 		if _, err := io.ReadFull(r, fixed[:]); err != nil {
-			return Metadata{}, nil, nil, fmt.Errorf("reading page descriptor: %w", err)
+			return Metadata{}, nil, nil, fmt.Errorf("reading compressed page descriptor: %w", err)
 		}
-		pages[i] = pageDescriptor{kind: pageKind(fixed[0]), keyID: binary.LittleEndian.Uint32(fixed[4:8]), offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]), crc32: binary.LittleEndian.Uint32(fixed[20:24])}
-		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings && pages[i].kind != pageForwardColumn && pages[i].kind != pageDatasetMapping) || pages[i].offset < headerSize || pages[i].length > maxPageLen {
+		if fixed[2] != 0 || fixed[3] != 0 || binary.LittleEndian.Uint32(fixed[28:32]) != 0 {
+			return Metadata{}, nil, nil, fmt.Errorf("invalid compressed page descriptor %d reserved bytes", i)
+		}
+		pages[i] = pageDescriptor{
+			kind: pageKind(fixed[0]), codec: pageCodec(fixed[1]), keyID: binary.LittleEndian.Uint32(fixed[4:8]),
+			offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]),
+			decodedLength: binary.LittleEndian.Uint32(fixed[20:24]), crc32: binary.LittleEndian.Uint32(fixed[24:28]),
+		}
+		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings && pages[i].kind != pageForwardColumn && pages[i].kind != pageDatasetMapping) ||
+			pages[i].offset < headerSize || pages[i].length == 0 || pages[i].length > maxPageLen || pages[i].decodedLength > maxPageLen || pages[i].codec != pageCodecZstd {
 			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
 		}
 	}

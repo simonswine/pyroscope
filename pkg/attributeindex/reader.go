@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 	"sync"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // RangeSource is satisfied by objstore.BucketReader. It is kept small so the
@@ -27,6 +29,9 @@ type Reader struct {
 	keys             []Key
 	pages            []pageDescriptor
 
+	decoderMu sync.Mutex
+	decoder   *zstd.Decoder
+
 	mu              sync.Mutex
 	entities        []Entity
 	hasEntities     bool
@@ -40,7 +45,8 @@ type Reader struct {
 	hasDatasetMaps  bool
 	closed          bool
 
-	// Memory budget tracking for decoded/cached data
+	// Memory budget tracking for compressed response buffers, decoded pages,
+	// and decoded data retained by caches.
 	decodedBytes    int64
 	maxDecodedBytes int64
 }
@@ -69,7 +75,7 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 		return nil, fmt.Errorf("unsupported attribute index footer")
 	}
 	requiredFeatures := binary.LittleEndian.Uint16(header[10:12])
-	if requiredFeatures != binary.LittleEndian.Uint16(footer[10:12]) || requiredFeatures&^featureDatasetMappings != 0 {
+	if requiredFeatures != binary.LittleEndian.Uint16(footer[10:12]) || requiredFeatures&featurePageCompression == 0 || requiredFeatures&^(featureDatasetMappings|featurePageCompression) != 0 {
 		return nil, fmt.Errorf("unsupported attribute index required features %d", requiredFeatures)
 	}
 	directoryOffset := int64(binary.LittleEndian.Uint64(footer[12:20]))
@@ -110,9 +116,18 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 	if err := validateAllocationBounds(entityCount, len(keys)); err != nil {
 		return nil, err
 	}
-	// Default memory budgets: 256MB for decoded/cached data
-	// This is separate from FetchRanges in-flight budget
+	// Default memory budgets: 256MB for compressed response buffers, decoded
+	// pages, and decoded data retained in query-lifetime caches.
 	maxDecodedBytes := int64(256 << 20)
+	decoder, err := zstd.NewReader(nil,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(uint64(maxPageLen)),
+		zstd.WithDecoderMaxWindow(uint64(maxPageLen)),
+		zstd.WithDecodeAllCapLimit(true),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating attribute index Zstd decoder: %w", err)
+	}
 	return &Reader{
 		source:           source,
 		object:           object,
@@ -122,7 +137,12 @@ func Open(ctx context.Context, source RangeSource, object string, size int64) (*
 		metadata:         metadata,
 		keys:             keys,
 		pages:            pages,
-		maxDecodedBytes:  maxDecodedBytes,
+		decoder:          decoder,
+		// Reserve the decoder's configured maximum scratch space as part of
+		// this Reader's budget. It is deliberately conservative: Zstd may grow
+		// scratch lazily, but it must never make the reader exceed its budget.
+		decodedBytes:    maxPageLen,
+		maxDecodedBytes: maxDecodedBytes,
 	}, nil
 }
 
@@ -172,10 +192,17 @@ func (r *Reader) DatasetMappings(ctx context.Context) ([][]uint32, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeIndexV1 requires a dataset mapping page")
 	}
-	pages, err := r.fetchPages(ctx, []int{pageIdx})
+	pageIndexes := []int{pageIdx}
+	pages, err := r.fetchPages(ctx, pageIndexes)
 	if err != nil {
 		return nil, fmt.Errorf("fetching dataset mapping page: %w", err)
 	}
+	keepPages := false
+	defer func() {
+		if !keepPages {
+			r.releasePageReservations(pageIndexes)
+		}
+	}()
 	mappings, err := decodeDatasetMappings(pages[0], r.entityCount)
 	if err != nil {
 		return nil, fmt.Errorf("decoding dataset mapping page: %w", err)
@@ -187,6 +214,7 @@ func (r *Reader) DatasetMappings(ctx context.Context) ([][]uint32, error) {
 	}
 	if !r.hasDatasetMaps {
 		r.datasetMappings, r.hasDatasetMaps = mappings, true
+		keepPages = true
 	}
 	return cloneDatasetMappings(r.datasetMappings), nil
 }
@@ -195,7 +223,6 @@ func (r *Reader) DatasetMappings(ctx context.Context) ([][]uint32, error) {
 // RangeSource, whose lifetime belongs to the caller. Close is idempotent.
 func (r *Reader) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.entities, r.hasEntities = nil, false
 	r.dictionaries, r.hasDictionaries = nil, false
 	r.postings, r.hasPostings = nil, false
@@ -203,6 +230,16 @@ func (r *Reader) Close() error {
 	r.datasetMappings, r.hasDatasetMaps = nil, false
 	r.decodedBytes = 0
 	r.closed = true
+	r.mu.Unlock()
+
+	// DecodeAll is serialized by decoderMu. Do not close its scratch buffers
+	// while a page decode is using them.
+	r.decoderMu.Lock()
+	if r.decoder != nil {
+		r.decoder.Close()
+		r.decoder = nil
+	}
+	r.decoderMu.Unlock()
 	return nil
 }
 
@@ -213,10 +250,17 @@ func (r *Reader) ensureOpen() error {
 	return nil
 }
 
-// trackDecoded accounts for decoded page data against the memory budget.
+// trackDecoded accounts for page and cache memory against the reader budget.
 // Call with negative bytes to release. Must be called with mu held.
 func (r *Reader) trackDecoded(bytes int64) error {
-	if r.decodedBytes+bytes > r.maxDecodedBytes {
+	if bytes < 0 {
+		if -bytes > r.decodedBytes {
+			return fmt.Errorf("decoded memory accounting underflow")
+		}
+		r.decodedBytes += bytes
+		return nil
+	}
+	if bytes > r.maxDecodedBytes-r.decodedBytes {
 		return fmt.Errorf("decoded memory %d + %d exceeds budget %d",
 			r.decodedBytes, bytes, r.maxDecodedBytes)
 	}
@@ -244,10 +288,17 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeIndexV1 is missing its entity page")
 	}
-	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
+	pageIndexes := []int{pageIdx}
+	pageBuffers, err := r.fetchPages(ctx, pageIndexes)
 	if err != nil {
 		return nil, fmt.Errorf("fetching entity page: %w", err)
 	}
+	keepPages := false
+	defer func() {
+		if !keepPages {
+			r.releasePageReservations(pageIndexes)
+		}
+	}()
 	entities, err := decodeEntities(pageBuffers[0])
 	if err != nil {
 		return nil, fmt.Errorf("decoding entity page: %w", err)
@@ -259,6 +310,7 @@ func (r *Reader) Entities(ctx context.Context) ([]Entity, error) {
 	}
 	if !r.hasEntities {
 		r.entities, r.hasEntities = entities, true
+		keepPages = true
 	}
 	entities = cloneEntities(r.entities)
 	r.mu.Unlock()
@@ -283,10 +335,17 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeIndexV1 is missing its dictionary page")
 	}
-	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
+	pageIndexes := []int{pageIdx}
+	pageBuffers, err := r.fetchPages(ctx, pageIndexes)
 	if err != nil {
 		return nil, fmt.Errorf("fetching dictionary page: %w", err)
 	}
+	keepPages := false
+	defer func() {
+		if !keepPages {
+			r.releasePageReservations(pageIndexes)
+		}
+	}()
 	values, err := decodeDictionaries(pageBuffers[0], r.keys)
 	if err != nil {
 		return nil, fmt.Errorf("decoding dictionary page: %w", err)
@@ -298,6 +357,7 @@ func (r *Reader) Dictionaries(ctx context.Context) ([][]Value, error) {
 	}
 	if !r.hasDictionaries {
 		r.dictionaries, r.hasDictionaries = values, true
+		keepPages = true
 	}
 	values = cloneDictionaries(r.dictionaries)
 	r.mu.Unlock()
@@ -326,10 +386,17 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	if !ok {
 		return nil, fmt.Errorf("AttributeIndexV1 is missing its postings page")
 	}
-	pageBuffers, err := r.fetchPages(ctx, []int{pageIdx})
+	pageIndexes := []int{pageIdx}
+	pageBuffers, err := r.fetchPages(ctx, pageIndexes)
 	if err != nil {
 		return nil, fmt.Errorf("fetching postings page: %w", err)
 	}
+	keepPages := false
+	defer func() {
+		if !keepPages {
+			r.releasePageReservations(pageIndexes)
+		}
+	}()
 	postings, err := decodePostings(pageBuffers[0], dictionaries)
 	if err != nil {
 		return nil, fmt.Errorf("decoding postings page: %w", err)
@@ -351,6 +418,7 @@ func (r *Reader) Postings(ctx context.Context) ([][][]uint32, error) {
 	}
 	if !r.hasPostings {
 		r.postings, r.hasPostings = postings, true
+		keepPages = true
 	}
 	postings = clonePostings(r.postings)
 	r.mu.Unlock()
@@ -388,6 +456,12 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching forward column pages: %w", err)
 	}
+	keepPages := false
+	defer func() {
+		if !keepPages {
+			r.releasePageReservations(columnPageIndexes)
+		}
+	}()
 
 	// Decode each column page
 	columns := make([][]uint32, len(r.keys))
@@ -420,6 +494,7 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 	}
 	if !r.hasColumns {
 		r.columns, r.hasColumns = columns, true
+		keepPages = true
 	}
 	columns = cloneColumns(r.columns)
 	r.mu.Unlock()
@@ -429,6 +504,25 @@ func (r *Reader) ForwardColumns(ctx context.Context) ([][]uint32, error) {
 // ForwardColumnsFor reads only the requested scoped-key pages. It is the
 // selective counterpart to ForwardColumns; callers receive columns in key order.
 func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32, error) {
+	// A previous full-column query has already paid to decode these pages.
+	// Reuse it rather than issuing another ranged read and decompression.
+	r.mu.Lock()
+	if err := r.ensureOpen(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	if r.hasColumns {
+		result := make([][]uint32, len(keys))
+		for i, key := range keys {
+			if keyID, found := slices.BinarySearchFunc(r.keys, key, compareKey); found {
+				result[i] = slices.Clone(r.columns[keyID])
+			}
+		}
+		r.mu.Unlock()
+		return result, nil
+	}
+	r.mu.Unlock()
+
 	dictionaries, err := r.Dictionaries(ctx)
 	if err != nil {
 		return nil, err
@@ -466,6 +560,7 @@ func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32,
 	if err != nil {
 		return nil, fmt.Errorf("fetching forward column pages: %w", err)
 	}
+	defer r.releasePageReservations(pageIndexes)
 
 	// Decode and place each column in the result
 	result := make([][]uint32, len(keys))
@@ -485,15 +580,14 @@ func (r *Reader) ForwardColumnsFor(ctx context.Context, keys []Key) ([][]uint32,
 	return result, nil
 }
 
-// fetchPages fetches multiple pages using bounded FetchRanges. It plans ranges,
-// executes bounded fetches, and validates checksums. Returned pages are in the
-// same order as pageIndexes.
-func (r *Reader) fetchPages(ctx context.Context, pageIndexes []int) ([][]byte, error) {
+// fetchPages fetches and decompresses pages independently. It retains a
+// decoded-page reservation for every returned buffer; callers must either turn
+// that reservation into a cache entry or release it with
+// releasePageReservations.
+func (r *Reader) fetchPages(ctx context.Context, pageIndexes []int) (result [][]byte, err error) {
 	if len(pageIndexes) == 0 {
 		return nil, nil
 	}
-
-	// Build page descriptors for planning
 	pages := make([]pageDescriptor, len(pageIndexes))
 	for i, idx := range pageIndexes {
 		if idx < 0 || idx >= len(r.pages) {
@@ -501,73 +595,132 @@ func (r *Reader) fetchPages(ctx context.Context, pageIndexes []int) ([][]byte, e
 		}
 		pages[i] = r.pages[idx]
 	}
-
-	// Plan coalesced ranges
-	planOptions := RangePlanOptions{
-		MaxGap:    64 << 10, // Coalesce pages within 64KB gaps
-		MaxLength: 16 << 20, // Max 16MB per coalesced range
-	}
-	ranges, err := PlanPageRanges(pages, planOptions)
+	ranges, err := PlanPageRanges(pages, RangePlanOptions{MaxGap: 64 << 10, MaxLength: 16 << 20})
 	if err != nil {
 		return nil, fmt.Errorf("planning page ranges: %w", err)
 	}
 
-	// Fetch with bounded concurrency and memory
-	fetchOptions := FetchOptions{
-		MaxConcurrent:    10,
-		MaxBytesInFlight: 64 << 20, // 64MB in-flight budget
+	// Reserve compressed response buffers before issuing requests. This budget
+	// is shared by all calls on this Reader, unlike FetchRanges' task-local
+	// semaphore.
+	var encodedBytes int64
+	for _, range_ := range ranges {
+		if range_.Length > r.maxDecodedBytes-encodedBytes {
+			return nil, fmt.Errorf("compressed page ranges exceed memory budget %d", r.maxDecodedBytes)
+		}
+		encodedBytes += range_.Length
 	}
-	rangeBuffers, err := FetchRanges(ctx, r.source, r.object, ranges, fetchOptions)
+	if err := r.reservePageMemory(encodedBytes); err != nil {
+		return nil, err
+	}
+	reservedEncoded := encodedBytes
+	reservedDecoded := int64(0)
+	defer func() {
+		if err != nil {
+			r.releasePageMemory(reservedEncoded + reservedDecoded)
+		}
+	}()
+
+	rangeBuffers, err := FetchRanges(ctx, r.source, r.object, ranges, FetchOptions{MaxConcurrent: 10, MaxBytesInFlight: 64 << 20})
 	if err != nil {
 		return nil, fmt.Errorf("fetching page ranges: %w", err)
 	}
-
-	// Extract individual pages from coalesced buffers and validate checksums.
-	// Note: range_.PageIndexes contains indices into the `pages` array we passed
-	// to PlanPageRanges (0-based), not indices into r.pages.
-	result := make([][]byte, len(pageIndexes))
+	result = make([][]byte, len(pageIndexes))
 	for rangeIdx, rangeBuffer := range rangeBuffers {
 		range_ := ranges[rangeIdx]
 		for _, localPageIdx := range range_.PageIndexes {
-			// localPageIdx is an index into the pages array we built,
-			// which corresponds to pageIndexes[localPageIdx]
-			if localPageIdx >= len(pageIndexes) {
+			if localPageIdx < 0 || localPageIdx >= len(pageIndexes) {
 				return nil, fmt.Errorf("page index %d out of bounds (have %d pages)", localPageIdx, len(pageIndexes))
 			}
 			originalPageIdx := pageIndexes[localPageIdx]
 			page := r.pages[originalPageIdx]
-
-			// Extract page data from range buffer
 			offsetInRange := page.offset - range_.Offset
 			if offsetInRange < 0 || offsetInRange+int64(page.length) > int64(len(rangeBuffer)) {
 				return nil, fmt.Errorf("page %d offset %d outside range buffer", originalPageIdx, offsetInRange)
 			}
-			pageData := rangeBuffer[offsetInRange : offsetInRange+int64(page.length)]
-
-			// Validate checksum
-			if checksum(pageData) != page.crc32 {
+			stored := rangeBuffer[offsetInRange : offsetInRange+int64(page.length)]
+			// The checksum is intentionally checked over the stored frame, before
+			// it is handed to the decompressor.
+			if checksum(stored) != page.crc32 {
 				return nil, fmt.Errorf("page %d checksum mismatch", originalPageIdx)
 			}
-
-			// Clone page data (caller owns the result)
-			result[localPageIdx] = slices.Clone(pageData)
+			if err := r.reservePageMemory(int64(page.decodedLength)); err != nil {
+				return nil, fmt.Errorf("reserving decoded page %d: %w", originalPageIdx, err)
+			}
+			reservedDecoded += int64(page.decodedLength)
+			decoded, err := r.decodePage(ctx, page, stored)
+			if err != nil {
+				return nil, fmt.Errorf("decompressing page %d: %w", originalPageIdx, err)
+			}
+			result[localPageIdx] = decoded
 		}
+		// All pages referencing this response buffer have been decoded. Let it
+		// go before processing another coalesced range and release its budget.
+		rangeBuffers[rangeIdx] = nil
+		r.releasePageMemory(range_.Length)
+		reservedEncoded -= range_.Length
 	}
-
 	return result, nil
 }
 
-// readPage is deprecated in favor of fetchPages but kept for backwards compatibility
-// during migration. Direct use should be replaced with fetchPages.
-func (r *Reader) readPage(ctx context.Context, page pageDescriptor, name string) ([]byte, error) {
-	data, err := readRange(ctx, r.source, r.object, page.offset, int64(page.length))
+func (r *Reader) decodePage(ctx context.Context, page pageDescriptor, stored []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if page.codec != pageCodecZstd {
+		return nil, fmt.Errorf("unsupported page codec %d", page.codec)
+	}
+	r.decoderMu.Lock()
+	defer r.decoderMu.Unlock()
+	if r.decoder == nil {
+		return nil, fmt.Errorf("attribute index reader is closed")
+	}
+	// DecodeAll's cap limit turns this descriptor-validated capacity into a
+	// hard output bound instead of relying on a length check after allocation.
+	decoded, err := r.decoder.DecodeAll(stored, make([]byte, 0, page.decodedLength))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s page: %w", name, err)
+		return nil, err
 	}
-	if checksum(data) != page.crc32 {
-		return nil, fmt.Errorf("%s page checksum mismatch", name)
+	if len(decoded) != int(page.decodedLength) {
+		return nil, fmt.Errorf("decoded length %d does not match descriptor %d", len(decoded), page.decodedLength)
 	}
-	return data, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func (r *Reader) reservePageMemory(bytes int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.ensureOpen(); err != nil {
+		return err
+	}
+	return r.trackDecoded(bytes)
+}
+
+func (r *Reader) releasePageMemory(bytes int64) {
+	if bytes == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Close discards all reservations. A concurrent fetch can then finish and
+	// release its local reservation harmlessly.
+	if r.closed {
+		return
+	}
+	_ = r.trackDecoded(-bytes)
+}
+
+func (r *Reader) releasePageReservations(pageIndexes []int) {
+	var bytes int64
+	for _, pageIndex := range pageIndexes {
+		if pageIndex >= 0 && pageIndex < len(r.pages) {
+			bytes += int64(r.pages[pageIndex].decodedLength)
+		}
+	}
+	r.releasePageMemory(bytes)
 }
 
 func cloneDatasetMappings(mappings [][]uint32) [][]uint32 {

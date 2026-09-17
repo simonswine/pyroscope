@@ -130,11 +130,11 @@ func TestReaderMemoryBudgetTracking(t *testing.T) {
 	// Reader should have memory budget set
 	require.Greater(t, reader.maxDecodedBytes, int64(0))
 
-	// Initial decoded bytes should be zero
+	// The decoder's bounded scratch capacity is reserved when the reader opens.
 	reader.mu.Lock()
 	initialBytes := reader.decodedBytes
 	reader.mu.Unlock()
-	require.Equal(t, int64(0), initialBytes)
+	require.Equal(t, int64(maxPageLen), initialBytes)
 
 	// After Close, decoded bytes should be reset
 	require.NoError(t, reader.Close())
