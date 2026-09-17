@@ -16,6 +16,7 @@ import (
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
+	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	"github.com/grafana/pyroscope/v2/pkg/model"
 	"github.com/grafana/pyroscope/v2/pkg/test"
 	"github.com/grafana/pyroscope/v2/pkg/util"
@@ -323,6 +324,54 @@ func TestIndex_Query(t *testing.T) {
 		require.NoError(t, idx.Restore(tx))
 		query(t, tx, idx)
 	})
+}
+
+func TestIndex_QueryMetadata_AttributeIndexMarker(t *testing.T) {
+	ctx := context.Background()
+	db := test.BoltDB(t)
+	minTime := test.UnixMilli("2024-09-23T08:00:00.000Z")
+	maxTime := test.UnixMilli("2024-09-23T09:00:00.000Z")
+	strings := metadata.NewStringTable()
+	tenant := strings.Put("tenant-a")
+	attributeIndex := &metastorev1.Dataset{
+		Format:  2,
+		Tenant:  tenant,
+		Name:    0,
+		MinTime: minTime,
+		MaxTime: maxTime,
+		Labels: metadata.NewLabelBuilder(strings).
+			WithLabelSet(metadata.LabelNameTenantDataset, metadata.LabelValueAttributeIndex).
+			Build(),
+	}
+	blockMeta := &metastorev1.BlockMeta{
+		Id:          test.ULID("2024-09-23T08:00:00.001Z"),
+		Tenant:      tenant,
+		MinTime:     minTime,
+		MaxTime:     maxTime,
+		Datasets:    []*metastorev1.Dataset{attributeIndex},
+		StringTable: strings.Strings,
+	}
+
+	idx := NewIndex(util.Logger, NewStore(), DefaultConfig, nil)
+	tx, err := db.Begin(true)
+	require.NoError(t, err)
+	require.NoError(t, idx.Init(tx))
+	require.NoError(t, idx.InsertBlock(tx, blockMeta))
+	require.NoError(t, tx.Commit())
+
+	tx, err = db.Begin(false)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, tx.Rollback()) }()
+	found, err := idx.QueryMetadata(tx, ctx, MetadataQuery{
+		Expr:      `{__tenant_dataset__="attribute_index"}`,
+		StartTime: time.UnixMilli(minTime),
+		EndTime:   time.UnixMilli(maxTime),
+		Tenant:    []string{"tenant-a"},
+	})
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	require.Len(t, found[0].Datasets, 1)
+	assert.Equal(t, uint32(2), found[0].Datasets[0].Format)
 }
 
 func TestIndex_QueryMetadata_StaleReadCacheReloadsShard(t *testing.T) {

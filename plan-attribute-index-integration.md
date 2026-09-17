@@ -259,23 +259,24 @@ Primary files:
 
 Tasks:
 
-- [ ] Define a dedicated attribute-index dataset format and section/access API.
-- [ ] Define a distinct metadata marker, for example
+- [x] Define a dedicated attribute-index dataset format and section/access API.
+- [x] Define a distinct metadata marker,
       `__tenant_dataset__="attribute_index"`.
-- [ ] Emit anonymous pseudo-dataset metadata containing tenant, tenant-specific
-      time bounds, absolute payload offset, size, and the marker.
-- [ ] Keep payload-internal offsets relative to the attribute-index payload.
-- [ ] Implement an offset-bounded range source for opening the payload within
+- [x] Add the anonymous pseudo-dataset metadata constructor containing tenant,
+      tenant-specific time bounds, absolute payload offset, size, and marker.
+      Segment-writer and compaction emission are deferred to steps 5 and 6.
+- [x] Keep payload-internal offsets relative to the attribute-index payload.
+- [x] Implement an offset-bounded range source for opening the payload within
       `block.bin`; reject out-of-bounds and overflowing ranges.
-- [ ] Avoid automatically fetching the whole attribute payload or containing
+- [x] Avoid automatically fetching the whole attribute payload or containing
       block when a ranged read is intended.
-- [ ] Update `WeightOf` and related accounting: a single-entry table of contents
+- [x] Update `WeightOf` and related accounting: a single-entry table of contents
       must no longer be assumed to mean TSDB.
-- [ ] Audit format dispatch and query dataset selection so attribute-index
+- [x] Audit format dispatch and query dataset selection so attribute-index
       pseudo-datasets are never accidentally opened as TSDB/profile datasets.
-- [ ] Test metadata encoding/decoding, metastore storage and filtering, and
+- [x] Test metadata encoding/decoding, metastore storage and filtering, and
       tenant isolation.
-- [ ] Update protobuf format documentation and run `make generate` when
+- [x] Update protobuf format documentation and run `make generate` when
       protobuf or configuration definitions change.
 
 Embedding the payload preserves the existing single-object upload, metadata

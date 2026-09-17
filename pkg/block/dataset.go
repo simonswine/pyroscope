@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/objstore"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/memory"
 	"github.com/grafana/pyroscope/v2/pkg/phlaredb"
@@ -21,8 +22,12 @@ import (
 type DatasetFormat uint32
 
 const (
+	// DatasetFormat0 stores a real tenant/service profile dataset.
 	DatasetFormat0 DatasetFormat = iota
+	// DatasetFormat1 stores a tenant-wide TSDB dataset index.
 	DatasetFormat1
+	// DatasetFormat2 stores an embedded AttributeIndexV1 payload.
+	DatasetFormat2
 )
 
 type Section uint32
@@ -32,6 +37,7 @@ const (
 	SectionTSDB
 	SectionSymbols
 	SectionDatasetIndex
+	SectionAttributeIndex
 )
 
 // DatasetWeight holds the section-level size breakdown of a dataset.
@@ -39,30 +45,37 @@ const (
 // and only TSDBBytes is set; the real profile and symbol sizes are
 // unknown until the query backend resolves the datasets at runtime.
 type DatasetWeight struct {
-	ProfilesBytes    uint64
-	TSDBBytes        uint64
-	SymbolsBytes     uint64
-	IndexLookupCount int
+	ProfilesBytes       uint64
+	TSDBBytes           uint64
+	SymbolsBytes        uint64
+	AttributeIndexBytes uint64
+	IndexLookupCount    int
 }
 
 // WeightOf computes the section size breakdown for a dataset from its
 // table of contents.
 func WeightOf(ds *metastorev1.Dataset) DatasetWeight {
 	toc := ds.TableOfContents
-	switch {
-	case len(toc) >= 3: // Format0: profiles, tsdb, symbols
+	switch DatasetFormat(ds.Format) {
+	case DatasetFormat0:
+		if len(toc) < 3 {
+			return DatasetWeight{}
+		}
 		return DatasetWeight{
 			ProfilesBytes: toc[1] - toc[0],
 			TSDBBytes:     toc[2] - toc[1],
 			SymbolsBytes:  (toc[0] + ds.Size) - toc[2],
 		}
-	case len(toc) == 1: // Format1: tenant-wide dataset index
+	case DatasetFormat1:
 		return DatasetWeight{
 			TSDBBytes:        ds.Size,
 			IndexLookupCount: 1,
 		}
+	case DatasetFormat2:
+		return DatasetWeight{AttributeIndexBytes: ds.Size}
+	default:
+		return DatasetWeight{}
 	}
-	return DatasetWeight{}
 }
 
 // Add accumulates another DatasetWeight into this one.
@@ -70,12 +83,13 @@ func (w *DatasetWeight) Add(other DatasetWeight) {
 	w.ProfilesBytes += other.ProfilesBytes
 	w.TSDBBytes += other.TSDBBytes
 	w.SymbolsBytes += other.SymbolsBytes
+	w.AttributeIndexBytes += other.AttributeIndexBytes
 	w.IndexLookupCount += other.IndexLookupCount
 }
 
 // Total returns the sum of all section bytes.
 func (w DatasetWeight) Total() uint64 {
-	return w.ProfilesBytes + w.TSDBBytes + w.SymbolsBytes
+	return w.ProfilesBytes + w.TSDBBytes + w.SymbolsBytes + w.AttributeIndexBytes
 }
 
 type sectionDesc struct {
@@ -101,10 +115,16 @@ var (
 			SectionDatasetIndex: sectionDesc{index: 0, name: "dataset_tsdb_index"},
 			SectionTSDB:         sectionDesc{index: 0, name: "dataset_tsdb_index"},
 		},
+		DatasetFormat2: {
+			SectionAttributeIndex: sectionDesc{index: 0, name: "attribute_index"},
+		},
 	}
 )
 
 func (sc Section) open(ctx context.Context, s *Dataset) (err error) {
+	if !s.supports(sc) {
+		return fmt.Errorf("section %d is not supported by dataset format %d", sc, s.meta.Format)
+	}
 	switch sc {
 	case SectionTSDB:
 		return openTSDB(ctx, s)
@@ -114,6 +134,8 @@ func (sc Section) open(ctx context.Context, s *Dataset) (err error) {
 		return openProfileTable(ctx, s)
 	case SectionDatasetIndex:
 		return openDatasetIndex(ctx, s)
+	case SectionAttributeIndex:
+		return openAttributeIndex(ctx, s)
 	default:
 		panic(fmt.Sprintf("bug: unknown section: %d", sc))
 	}
@@ -130,9 +152,10 @@ type Dataset struct {
 	buf  *bufferpool.Buffer
 	err  error
 
-	tsdb     *tsdbBuffer
-	symbols  *symdb.Reader
-	profiles *ParquetFile
+	tsdb           *tsdbBuffer
+	symbols        *symdb.Reader
+	profiles       *ParquetFile
+	attributeIndex *attributeindex.Reader
 
 	memSize int
 }
@@ -175,7 +198,21 @@ func (s *Dataset) open(ctx context.Context, sections ...Section) (err error) {
 		// The dataset has already been closed with an error.
 		return s.err
 	}
-	if err = s.obj.Open(ctx); err != nil {
+	for _, sc := range sections {
+		if !s.supports(sc) {
+			return fmt.Errorf("section %d is not supported by dataset format %d", sc, s.meta.Format)
+		}
+	}
+	attributeIndexOnly := len(sections) > 0
+	for _, sc := range sections {
+		attributeIndexOnly = attributeIndexOnly && sc == SectionAttributeIndex
+	}
+	if attributeIndexOnly {
+		err = s.obj.OpenNoCache(ctx)
+	} else {
+		err = s.obj.Open(ctx)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to open object: %w", err)
 	}
 	defer func() {
@@ -185,7 +222,7 @@ func (s *Dataset) open(ctx context.Context, sections ...Section) (err error) {
 			_ = s.closeErr(err)
 		}
 	}()
-	if s.obj.buf == nil && s.meta.Size < uint64(s.memSize) {
+	if !attributeIndexOnly && s.obj.buf == nil && s.meta.Size < uint64(s.memSize) {
 		s.buf = bufferpool.GetBuffer(int(s.meta.Size))
 		off, size := int64(s.offset()), int64(s.meta.Size)
 		if err = objstore.ReadRange(ctx, s.buf, s.obj.path, s.obj.storage, off, size); err != nil {
@@ -234,6 +271,10 @@ func (s *Dataset) closeErr(err error) error {
 	if s.profiles != nil {
 		merr.Add(s.profiles.Close())
 	}
+	if s.attributeIndex != nil {
+		merr.Add(s.attributeIndex.Close())
+		s.attributeIndex = nil
+	}
 	if s.obj != nil {
 		merr.Add(s.obj.CloseWithError(err))
 	}
@@ -254,18 +295,27 @@ func (s *Dataset) Symbols() symdb.SymbolsReader { return s.symbols }
 
 func (s *Dataset) Index() phlaredb.IndexReader { return s.tsdb.index }
 
+// AttributeIndex returns the embedded AttributeIndexV1 reader after the
+// dataset has been opened with SectionAttributeIndex. The returned reader is
+// owned by the dataset and must not be used after Dataset.Close.
+func (s *Dataset) AttributeIndex() *attributeindex.Reader { return s.attributeIndex }
+
 // Offset of the dataset section within the object.
 func (s *Dataset) offset() uint64 { return s.meta.TableOfContents[0] }
 
-func (s *Dataset) section(sc Section) sectionDesc {
+func (s *Dataset) supports(sc Section) bool {
 	if int(s.meta.Format) >= len(sections) {
-		panic(fmt.Sprintf("bug: unknown dataset format: %d", s.meta.Format))
+		return false
 	}
 	f := sections[s.meta.Format]
-	if int(sc) >= len(f) {
-		panic(fmt.Sprintf("bug: invalid section index: %d", int(sc)))
+	return int(sc) < len(f) && f[sc].name != ""
+}
+
+func (s *Dataset) section(sc Section) sectionDesc {
+	if !s.supports(sc) {
+		panic(fmt.Sprintf("bug: unsupported section %d for dataset format %d", sc, s.meta.Format))
 	}
-	return f[sc]
+	return sections[s.meta.Format][sc]
 }
 
 func (s *Dataset) sectionOffset(sc Section) int64 {

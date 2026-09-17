@@ -204,6 +204,18 @@ func (obj *Object) Open(ctx context.Context) error {
 	})
 }
 
+// OpenNoCache acquires the object without downloading it or loading it into
+// memory. It is used by page-oriented embedded indexes, whose readers issue
+// bounded GetRange calls for just the pages a query needs.
+func (obj *Object) OpenNoCache(ctx context.Context) error {
+	return obj.refs.IncErr(func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 func (obj *Object) open(ctx context.Context) (err error) {
 	if obj.err != nil {
 		// In case if the object has been already closed with an error,

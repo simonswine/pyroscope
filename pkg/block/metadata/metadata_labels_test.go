@@ -241,6 +241,31 @@ func TestFindDatasets(t *testing.T) {
 	}
 }
 
+func TestFindDatasetsFindsAttributeIndexMarker(t *testing.T) {
+	strings := NewStringTable()
+	attributeIndex := &metastorev1.Dataset{Labels: NewLabelBuilder(strings).
+		WithLabelSet(LabelNameTenantDataset, LabelValueAttributeIndex).
+		Build()}
+	tsdbIndex := &metastorev1.Dataset{Labels: NewLabelBuilder(strings).
+		WithLabelSet(LabelNameTenantDataset, LabelValueDatasetTSDBIndex).
+		Build()}
+	md := &metastorev1.BlockMeta{Datasets: []*metastorev1.Dataset{attributeIndex, tsdbIndex}, StringTable: strings.Strings}
+
+	actual := slices.Collect(FindDatasets(md, labels.MustNewMatcher(labels.MatchEqual, LabelNameTenantDataset, LabelValueAttributeIndex)))
+	assert.Equal(t, []*metastorev1.Dataset{attributeIndex}, actual)
+}
+
+func TestDatasetHasLabel(t *testing.T) {
+	strings := NewStringTable()
+	dataset := &metastorev1.Dataset{Labels: NewLabelBuilder(strings).
+		WithLabelSet(LabelNameTenantDataset, LabelValueAttributeIndex).
+		Build()}
+
+	assert.True(t, DatasetHasLabel(dataset, strings.Strings, LabelNameTenantDataset, LabelValueAttributeIndex))
+	assert.False(t, DatasetHasLabel(dataset, strings.Strings, LabelNameTenantDataset, LabelValueDatasetTSDBIndex))
+	assert.False(t, DatasetHasLabel(&metastorev1.Dataset{Labels: []int32{1, 999, 0}}, strings.Strings, LabelNameTenantDataset, LabelValueAttributeIndex))
+}
+
 func Test_LabelMatcher_Skip(t *testing.T) {
 	strings := []string{"", "foo", "bar", "baz", "qux"}
 

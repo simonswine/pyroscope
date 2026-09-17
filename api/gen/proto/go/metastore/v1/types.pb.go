@@ -185,8 +185,15 @@ type Dataset struct {
 	//   - 1: index.tsdb
 	//   - 2: symbols.symdb
 	//
-	// Format 1 corresponds to the tenant-wide index:
+	// Format 1 corresponds to the tenant-wide TSDB index:
 	//   - 0: index.tsdb (dataset index)
+	//
+	// Format 2 corresponds to an embedded AttributeIndexV1 payload:
+	//   - 0: attribute-index payload within block.bin
+	//
+	// Attribute-index payload-internal offsets are relative to its sole table
+	// of contents entry. Its Dataset.size is the payload length. Attribute-index
+	// dataset references are positions in this block's complete datasets array.
 	TableOfContents []uint64 `protobuf:"varint,5,rep,packed,name=table_of_contents,json=tableOfContents,proto3" json:"table_of_contents,omitempty"`
 	// Size of the dataset in bytes.
 	Size uint64 `protobuf:"varint,6,opt,name=size,proto3" json:"size,omitempty"`

@@ -134,9 +134,11 @@ func PlanCompaction(objects Objects) ([]*CompactionPlan, error) {
 	m := make(map[string]*CompactionPlan)
 	for _, obj := range objects {
 		for _, ds := range obj.meta.Datasets {
-			if ds.Name == 0 {
-				// Anonymous dataset is never compacted:
-				// it is rebuilt based on the actual block contents.
+			if ds.Name == 0 || DatasetFormat(ds.Format) != DatasetFormat0 {
+				// Pseudo-datasets (tenant-wide TSDB and attribute indexes) are
+				// never compacted. They are rebuilt from real profile contents.
+				// Unknown non-profile formats are likewise not safe to open as a
+				// profile dataset.
 				continue
 			}
 			tm, ok := m[obj.meta.StringTable[ds.Tenant]]

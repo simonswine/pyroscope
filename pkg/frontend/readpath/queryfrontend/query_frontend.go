@@ -225,6 +225,7 @@ func (q *QueryFrontend) doQuery(
 	span.SetTag("profiles_bytes", weight.ProfilesBytes)
 	span.SetTag("tsdb_bytes", weight.TSDBBytes)
 	span.SetTag("symbols_bytes", weight.SymbolsBytes)
+	span.SetTag("attribute_index_bytes", weight.AttributeIndexBytes)
 	span.SetTag("datasets_count", datasetsCount)
 	span.SetTag("index_lookup_blocks", weight.IndexLookupCount)
 	startTime := time.UnixMilli(req.StartTime)
@@ -240,6 +241,7 @@ func (q *QueryFrontend) doQuery(
 		"profiles_bytes", humanize.Bytes(weight.ProfilesBytes),
 		"tsdb_bytes", humanize.Bytes(weight.TSDBBytes),
 		"symbols_bytes", humanize.Bytes(weight.SymbolsBytes),
+		"attribute_index_bytes", humanize.Bytes(weight.AttributeIndexBytes),
 		"datasets", datasetsCount,
 		"index_lookup_blocks", weight.IndexLookupCount,
 		"start_time", startTime.UTC().Format(time.RFC3339),
