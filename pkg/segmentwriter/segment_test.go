@@ -30,6 +30,7 @@ import (
 	"github.com/grafana/pyroscope/api/gen/proto/go/ingester/v1/ingesterv1connect"
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	"github.com/grafana/pyroscope/v2/pkg/metastore"
@@ -310,15 +311,16 @@ func TestDatasetMinMaxTime(t *testing.T) {
 
 	block := <-metas
 
-	// Datasets in the block: real datasets are sorted by tenant+service; a
-	// per-tenant dataset index pseudo-dataset is appended after the last
-	// real dataset of each tenant.
+	// Datasets in the block: real datasets are sorted by tenant+service; both
+	// tenant-wide pseudo-datasets are appended after the tenant's real datasets.
 	expected := [][2]int{
 		{10, 1337}, // ta/svc1
 		{10, 1337}, // ta dataset index
+		{10, 1337}, // ta attribute index
 		{239, 420}, // tb/svc1
 		{420, 421}, // tb/svc2
 		{239, 421}, // tb dataset index
+		{239, 421}, // tb attribute index
 	}
 
 	require.Equal(t, len(expected), len(block.Datasets))
@@ -331,12 +333,10 @@ func TestDatasetMinMaxTime(t *testing.T) {
 }
 
 // TestSegmentTenantDatasetIndexes flushes a multi-tenant segment and
-// inspects the per-tenant Format1 dataset_index pseudo-datasets in the
-// resulting block. For each tenant it verifies that the dataset_index
-// encodes one entry per real dataset of the tenant, and that each
-// entry's chunk SeriesIndex is the global position of the real dataset
-// within meta.Datasets (this is what the query backend uses to resolve
-// datasets from a Format1 lookup).
+// inspects the per-tenant TSDB and attribute-index pseudo-datasets in the
+// resulting block. For each tenant it verifies that the TSDB index encodes one
+// entry per real dataset and that both indexes resolve global positions of only
+// that tenant's real datasets.
 func TestSegmentTenantDatasetIndexes(t *testing.T) {
 	l := test.NewTestingLogger(t)
 	bucket := memory.NewInMemBucket()
@@ -375,6 +375,7 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 	// meta.Datasets and find each tenant's Format1 pseudo-dataset.
 	realByTenant := map[string][]int{}
 	indexByTenant := map[string]*metastorev1.Dataset{}
+	attributeIndexByTenant := map[string]*metastorev1.Dataset{}
 	for i, ds := range meta.Datasets {
 		tenantName := meta.StringTable[ds.Tenant]
 		switch block.DatasetFormat(ds.Format) {
@@ -383,11 +384,15 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 		case block.DatasetFormat1:
 			require.Nil(t, indexByTenant[tenantName], "more than one Format1 dataset for tenant %s", tenantName)
 			indexByTenant[tenantName] = ds
+		case block.DatasetFormat2:
+			require.Nil(t, attributeIndexByTenant[tenantName], "more than one Format2 dataset for tenant %s", tenantName)
+			attributeIndexByTenant[tenantName] = ds
 		}
 	}
 	require.Equal(t, []int{0, 1}, realByTenant["ta"], "expected ta to have two real datasets")
 	require.Len(t, realByTenant["tb"], 1, "expected tb to have one real dataset")
 	require.Len(t, indexByTenant, 2, "expected one Format1 dataset per tenant")
+	require.Len(t, attributeIndexByTenant, 2, "expected one Format2 dataset per tenant")
 
 	// Open the block and inspect each tenant's dataset_index.
 	obj := block.NewObject(phlareobj.NewBucket(bucket), meta)
@@ -420,6 +425,23 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 			slices.Sort(seriesIndices)
 			assert.Equal(t, realByTenant[tenantName], seriesIndices,
 				"dataset_index series must point to the tenant's real datasets via global positions")
+		})
+	}
+
+	for tenantName, indexDS := range attributeIndexByTenant {
+		t.Run(tenantName, func(t *testing.T) {
+			ds := block.NewDataset(indexDS, obj)
+			t.Cleanup(func() { _ = ds.Close() })
+			require.NoError(t, ds.Open(context.Background(), block.SectionAttributeIndex))
+
+			ids, err := ds.AttributeIndex().DatasetIDs(context.Background(), []attributeindex.Matcher{{
+				Key:      attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: model.LabelNameServiceName},
+				Operator: attributeindex.MatchRegexp,
+				Regexp:   ".*",
+			}})
+			require.NoError(t, err)
+			assert.Equal(t, uint32s(realByTenant[tenantName]), ids,
+				"attribute index must resolve to this tenant's real global dataset positions")
 		})
 	}
 }
@@ -1094,6 +1116,14 @@ func isSegmentPath(p string) bool {
 		fs[0] == block.DirNameSegment &&
 		fs[2] == block.DirNameAnonTenant &&
 		fs[4] == block.FileNameDataObject
+}
+
+func uint32s(ids []int) []uint32 {
+	result := make([]uint32, len(ids))
+	for i, id := range ids {
+		result[i] = uint32(id)
+	}
+	return result
 }
 
 func hasUnsymbolizedLabel(t *testing.T, block *metastorev1.BlockMeta) bool {

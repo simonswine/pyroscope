@@ -20,6 +20,7 @@ import (
 	"github.com/grafana/dskit/backoff"
 	"github.com/grafana/dskit/tracing"
 	"github.com/oklog/ulid/v2"
+	prommodel "github.com/prometheus/common/model"
 	"github.com/thanos-io/objstore"
 	"golang.org/x/exp/maps"
 	"golang.org/x/time/rate"
@@ -27,6 +28,7 @@ import (
 	profilev1 "github.com/grafana/pyroscope/api/gen/proto/go/google/v1"
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	"github.com/grafana/pyroscope/v2/pkg/model"
@@ -240,7 +242,7 @@ func (s *segment) flush(ctx context.Context) (err error) {
 	}
 
 	// TODO(kolesnikovae): Use buffer pool for blockData.
-	blockData, blockMeta, err := s.flushBlock(stream)
+	blockData, blockMeta, err := s.flushBlock(ctx, stream)
 	if err != nil {
 		return fmt.Errorf("failed to flush block %s: %w", s.ulid.String(), err)
 	}
@@ -254,7 +256,7 @@ func (s *segment) flush(ctx context.Context) (err error) {
 	return nil
 }
 
-func (s *segment) flushBlock(stream flushStream) ([]byte, *metastorev1.BlockMeta, error) {
+func (s *segment) flushBlock(ctx context.Context, stream flushStream) ([]byte, *metastorev1.BlockMeta, error) {
 	start := time.Now()
 	hostname, _ := os.Hostname()
 
@@ -276,49 +278,93 @@ func (s *segment) flushBlock(stream flushStream) ([]byte, *metastorev1.BlockMeta
 
 	w := &writerOffset{Writer: blockFile}
 	// Datasets are flushed in tenant+service order, so all datasets of a
-	// given tenant are contiguous. We accumulate series of each tenant in
-	// a DatasetIndexWriter and emit a per-tenant dataset index pseudo-
-	// dataset once we observe the tenant boundary (or after the last head).
+	// given tenant are contiguous. We build both tenant-wide indexes from the
+	// same complete persisted series labels and emit them at each tenant
+	// boundary (and after the final head).
 	var (
-		curTenant    string
-		curTenantIdx int
-		dsIndex      *block.DatasetIndexWriter
+		curTenant string
+		dsIndex   *block.DatasetIndexWriter
+		attrIndex *attributeindex.SeriesBuilder
+		minTime   int64
+		maxTime   int64
 	)
-	for stream.Next() {
-		f := stream.At()
-		if dsIndex == nil || f.dataset.key.tenant != curTenant {
-			if dsIndex != nil {
-				n, err := writeTenantDatasetIndex(w, meta, stringTable, curTenant, curTenantIdx, dsIndex)
-				if err != nil {
-					return nil, nil, err
-				}
-				if n > 0 {
-					s.debuginfo.tenantIndexes++
-					s.debuginfo.tenantIndexBytes += n
-					s.sw.metrics.tenantIndexBytes.WithLabelValues(s.sshard, curTenant).Observe(float64(n))
-				}
-			}
-			curTenant = f.dataset.key.tenant
-			curTenantIdx = len(meta.Datasets)
-			dsIndex = block.NewDatasetIndexWriter()
+	flushTenantIndexes := func() error {
+		if dsIndex == nil {
+			return nil
 		}
-		ds := concatSegmentHead(f, w, stringTable)
-		f.flushed.WriteDatasetIndex(dsIndex, uint32(len(meta.Datasets)))
-		meta.MinTime = min(meta.MinTime, ds.MinTime)
-		meta.MaxTime = max(meta.MaxTime, ds.MaxTime)
-		meta.Datasets = append(meta.Datasets, ds)
-		s.sw.metrics.headSizeBytes.WithLabelValues(s.sshard, f.dataset.key.tenant).Observe(float64(ds.Size))
-	}
-	if dsIndex != nil {
-		n, err := writeTenantDatasetIndex(w, meta, stringTable, curTenant, curTenantIdx, dsIndex)
+		n, err := writeTenantDatasetIndex(w, meta, stringTable, curTenant, minTime, maxTime, dsIndex)
 		if err != nil {
-			return nil, nil, err
+			attrIndex.Close()
+			return err
 		}
 		if n > 0 {
 			s.debuginfo.tenantIndexes++
 			s.debuginfo.tenantIndexBytes += n
 			s.sw.metrics.tenantIndexBytes.WithLabelValues(s.sshard, curTenant).Observe(float64(n))
 		}
+		n, err = writeTenantAttributeIndex(ctx, w, meta, stringTable, curTenant, minTime, maxTime, attrIndex)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			s.debuginfo.tenantIndexes++
+			s.debuginfo.tenantIndexBytes += n
+			s.sw.metrics.tenantIndexBytes.WithLabelValues(s.sshard, curTenant).Observe(float64(n))
+		}
+		return nil
+	}
+	for stream.Next() {
+		f := stream.At()
+		if dsIndex == nil || f.dataset.key.tenant != curTenant {
+			if err := flushTenantIndexes(); err != nil {
+				return nil, nil, err
+			}
+			curTenant = f.dataset.key.tenant
+			dsIndex = block.NewDatasetIndexWriter()
+			var err error
+			attrIndex, err = attributeindex.NewSeriesBuilder(attributeindex.Metadata{
+				Tenant:        curTenant,
+				EntityKind:    "series",
+				TimeSemantics: attributeindex.TimeLegacyCoarseCoverage,
+			}, attributeindex.DefaultBuilderLimits())
+			if err != nil {
+				dsIndex.Close()
+				return nil, nil, fmt.Errorf("creating attribute index builder for tenant %q: %w", curTenant, err)
+			}
+			minTime = math.MaxInt64
+			maxTime = 0
+		}
+
+		// Capture the real dataset's final, block-global position before any
+		// pseudo-dataset is appended. Earlier tenants' pseudo-datasets are
+		// intentionally included in this position.
+		if uint64(len(meta.Datasets)) > math.MaxUint32 {
+			dsIndex.Close()
+			attrIndex.Close()
+			return nil, nil, fmt.Errorf("dataset position %d exceeds uint32", len(meta.Datasets))
+		}
+		datasetID := uint32(len(meta.Datasets))
+		ds := concatSegmentHead(f, w, stringTable)
+		if err := f.flushed.VisitDatasetIndexSeries(func(labels model.Labels, fp prommodel.Fingerprint) error {
+			dsIndex.AddSeries(datasetID, labels, fp)
+			if err := attrIndex.AddSeriesContext(ctx, datasetID, labels); err != nil {
+				return fmt.Errorf("adding attribute index series: %w", err)
+			}
+			return nil
+		}); err != nil {
+			dsIndex.Close()
+			attrIndex.Close()
+			return nil, nil, err
+		}
+		minTime = min(minTime, ds.MinTime)
+		maxTime = max(maxTime, ds.MaxTime)
+		meta.MinTime = min(meta.MinTime, ds.MinTime)
+		meta.MaxTime = max(meta.MaxTime, ds.MaxTime)
+		meta.Datasets = append(meta.Datasets, ds)
+		s.sw.metrics.headSizeBytes.WithLabelValues(s.sshard, f.dataset.key.tenant).Observe(float64(ds.Size))
+	}
+	if err := flushTenantIndexes(); err != nil {
+		return nil, nil, err
 	}
 
 	meta.StringTable = stringTable.Strings
@@ -348,18 +394,17 @@ func (w *writerOffset) Write(p []byte) (n int, err error) {
 // metadata, annotated with the __tenant_dataset__ = dataset_tsdb_index
 // label.
 //
-// firstDatasetIdx is the index of the tenant's first real dataset within
-// meta.Datasets and is used to derive the time range covered by the
-// tenant in the segment.
-// writeTenantDatasetIndex returns the number of bytes written for the
-// dataset index payload (0 if the index is empty and no pseudo-dataset
-// was emitted).
+// minTime and maxTime are calculated from the tenant's real datasets while
+// they are flushed. In particular, they do not depend on where either
+// pseudo-dataset is inserted into meta.Datasets.
+// writeTenantDatasetIndex returns the number of bytes written for the dataset
+// index payload (0 if the index is empty and no pseudo-dataset was emitted).
 func writeTenantDatasetIndex(
 	w *writerOffset,
 	meta *metastorev1.BlockMeta,
 	stringTable *metadata.StringTable,
 	tenant string,
-	firstDatasetIdx int,
+	minTime, maxTime int64,
 	dsIndex *block.DatasetIndexWriter,
 ) (int64, error) {
 	defer dsIndex.Close()
@@ -371,11 +416,6 @@ func writeTenantDatasetIndex(
 	if err != nil {
 		return 0, fmt.Errorf("failed to write dataset index: %w", err)
 	}
-	var minT, maxT int64 = math.MaxInt64, 0
-	for _, ds := range meta.Datasets[firstDatasetIdx:] {
-		minT = min(minT, ds.MinTime)
-		maxT = max(maxT, ds.MaxTime)
-	}
 	// We annotate the dataset with the
 	// __tenant_dataset__ = "dataset_tsdb_index" label,
 	// so the dataset index metadata can be queried.
@@ -386,12 +426,42 @@ func writeTenantDatasetIndex(
 		Format:          uint32(block.DatasetFormat1),
 		Tenant:          stringTable.Put(tenant),
 		Name:            0, // Anonymous.
-		MinTime:         minT,
-		MaxTime:         maxT,
+		MinTime:         minTime,
+		MaxTime:         maxTime,
 		TableOfContents: []uint64{off},
 		Size:            uint64(n),
 		Labels:          labels,
 	})
+	return n, nil
+}
+
+// writeTenantAttributeIndex writes the mapping-aware AttributeIndexV1 payload
+// for one tenant and appends its anonymous pseudo-dataset metadata. The
+// builder is closed on every path; an encoding or write failure prevents the
+// containing block from being uploaded or published.
+func writeTenantAttributeIndex(
+	ctx context.Context,
+	w *writerOffset,
+	meta *metastorev1.BlockMeta,
+	stringTable *metadata.StringTable,
+	tenant string,
+	minTime, maxTime int64,
+	index *attributeindex.SeriesBuilder,
+) (int64, error) {
+	if index == nil {
+		return 0, fmt.Errorf("attribute index builder for tenant %q is nil", tenant)
+	}
+	defer index.Close()
+	if index.Empty() {
+		return 0, nil
+	}
+	off := uint64(w.offset)
+	n, err := index.WriteTo(ctx, w)
+	if err != nil {
+		return 0, fmt.Errorf("failed to write attribute index: %w", err)
+	}
+	meta.Datasets = append(meta.Datasets, block.NewAttributeIndexDataset(
+		stringTable.Put(tenant), minTime, maxTime, off, uint64(n), stringTable))
 	return n, nil
 }
 

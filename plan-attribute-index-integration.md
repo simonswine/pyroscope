@@ -334,22 +334,33 @@ Primary files:
 
 Tasks:
 
-- [ ] Expose flushed series through an error-returning visitor or equivalent
+- [x] Expose flushed series through an error-returning visitor or equivalent
       API so both builders can consume the same labels without reparsing TSDB.
-- [ ] Maintain an attribute-index builder alongside `DatasetIndexWriter` for
+- [x] Maintain an attribute-index builder alongside `DatasetIndexWriter` for
       the current tenant during `flushBlock`.
-- [ ] Capture each real dataset's actual position before appending its metadata
+- [x] Capture each real dataset's actual position before appending its metadata
       and feed that same position to both builders.
-- [ ] Flush both tenant indexes at each tenant boundary and after the last head.
-- [ ] Compute time bounds from the tenant's real datasets, without relying on
+- [x] Flush both tenant indexes at each tenant boundary and after the last head.
+- [x] Compute time bounds from the tenant's real datasets, without relying on
       pseudo-dataset insertion order.
-- [ ] Preserve correct dataset IDs after earlier tenants' pseudo-datasets have
+- [x] Preserve correct dataset IDs after earlier tenants' pseudo-datasets have
       been appended to `BlockMeta.Datasets`.
-- [ ] Handle empty/skipped heads consistently and avoid empty pseudo-datasets
+- [x] Handle empty/skipped heads consistently and avoid empty pseudo-datasets
       unless an explicit empty-index contract requires them.
-- [ ] Propagate builder/write errors and clean up all builders.
-- [ ] Include attribute bytes in block size and upload accounting while leaving
+- [x] Propagate builder/write errors and clean up all builders.
+- [x] Include attribute bytes in block size and upload accounting while leaving
       upload, registration, and DLQ ordering unchanged.
+
+`FlushedHead.VisitDatasetIndexSeries` exposes each complete persisted series
+label set through an error-returning visitor. `flushBlock` uses that single
+stream to build both tenant-wide indexes, assigning the real dataset's global
+metadata position before either pseudo-dataset is appended. At each tenant
+boundary, it writes the existing TSDB index and an `AttributeIndexV1` payload;
+the latter is represented by `block.NewAttributeIndexDataset`. Both use time
+bounds accumulated only from real datasets. Empty heads never enter the stream,
+and an empty builder emits no pseudo-dataset. Attribute payload bytes are
+written into the existing `block.bin` buffer before the ordinary upload,
+metadata publication, and DLQ flow.
 
 ### 6. Integrate compaction rebuilding
 
