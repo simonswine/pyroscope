@@ -38,6 +38,8 @@ const (
 	SectionSymbols
 	SectionDatasetIndex
 	SectionAttributeIndex
+	// SectionAttributeMetadata opens discovery data without resolving dataset references.
+	SectionAttributeMetadata
 )
 
 // DatasetWeight holds the section-level size breakdown of a dataset.
@@ -116,7 +118,8 @@ var (
 			SectionTSDB:         sectionDesc{index: 0, name: "dataset_tsdb_index"},
 		},
 		DatasetFormat2: {
-			SectionAttributeIndex: sectionDesc{index: 0, name: "attribute_index"},
+			SectionAttributeIndex:    sectionDesc{index: 0, name: "attribute_index"},
+			SectionAttributeMetadata: sectionDesc{index: 0, name: "attribute_metadata"},
 		},
 	}
 )
@@ -135,7 +138,9 @@ func (sc Section) open(ctx context.Context, s *Dataset) (err error) {
 	case SectionDatasetIndex:
 		return openDatasetIndex(ctx, s)
 	case SectionAttributeIndex:
-		return openAttributeIndex(ctx, s)
+		return openAttributeIndex(ctx, s, true)
+	case SectionAttributeMetadata:
+		return openAttributeIndex(ctx, s, false)
 	default:
 		panic(fmt.Sprintf("bug: unknown section: %d", sc))
 	}
@@ -205,7 +210,7 @@ func (s *Dataset) open(ctx context.Context, sections ...Section) (err error) {
 	}
 	attributeIndexOnly := len(sections) > 0
 	for _, sc := range sections {
-		attributeIndexOnly = attributeIndexOnly && sc == SectionAttributeIndex
+		attributeIndexOnly = attributeIndexOnly && (sc == SectionAttributeIndex || sc == SectionAttributeMetadata)
 	}
 	if attributeIndexOnly {
 		err = s.obj.OpenNoCache(ctx)

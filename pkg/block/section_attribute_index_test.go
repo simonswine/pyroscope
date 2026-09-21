@@ -40,6 +40,33 @@ func TestEmbeddedAttributeIndex(t *testing.T) {
 	require.Less(t, count.Load(), uint64(1<<20))
 }
 
+func TestEmbeddedAttributeMetadata(t *testing.T) {
+	ctx := context.Background()
+	payload := newAttributeIndexPayload(t, "tenant-a", []uint32{0})
+	object, indexMeta, count := newEmbeddedAttributeIndexObject(t, ctx, "tenant-a", payload, nil)
+	// A discovery plan contains only the pseudo-dataset. Make the full block
+	// metadata unavailable to prove discovery does not attempt to fetch it.
+	md := object.Metadata().CloneVT()
+	md.Datasets = []*metastorev1.Dataset{indexMeta}
+	md.MetadataOffset = md.Size + 1
+	object.SetMetadata(md)
+	dataset := NewDataset(indexMeta, object)
+	require.NoError(t, dataset.Open(ctx, SectionAttributeMetadata))
+	t.Cleanup(func() { require.NoError(t, dataset.Close()) })
+	values, err := dataset.AttributeIndex().Values(ctx, attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "service_name"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []attributeindex.Value{attributeindex.StringValue("api")}, values)
+	require.Less(t, count.Load(), uint64(len(payload)))
+}
+
+func TestEmbeddedAttributeMetadataRejectsForeignTenant(t *testing.T) {
+	ctx := context.Background()
+	payload := newAttributeIndexPayload(t, "tenant-b", []uint32{0})
+	object, indexMeta, _ := newEmbeddedAttributeIndexObject(t, ctx, "tenant-a", payload, nil)
+	dataset := NewDataset(indexMeta, object)
+	require.ErrorContains(t, dataset.Open(ctx, SectionAttributeMetadata), "does not match dataset tenant")
+}
+
 func TestEmbeddedAttributeIndexRejectsInvalidDatasetReferences(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {

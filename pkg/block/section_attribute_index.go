@@ -15,7 +15,7 @@ import (
 // openAttributeIndex opens the payload through an offset-bounded range source.
 // Unlike the profile and TSDB sections, AttributeIndexV1 is page-oriented, so
 // opening it reads only its header, footer, and root directory.
-func openAttributeIndex(ctx context.Context, s *Dataset) (err error) {
+func openAttributeIndex(ctx context.Context, s *Dataset, validateReferences bool) (err error) {
 	offset, size, err := s.attributeIndexRange()
 	if err != nil {
 		return err
@@ -43,8 +43,13 @@ func openAttributeIndex(ctx context.Context, s *Dataset) (err error) {
 		return fmt.Errorf("attribute index tenant %q does not match dataset tenant %q",
 			reader.Metadata().Tenant, s.tenant)
 	}
-	if err := validateAttributeIndexReferences(ctx, s.obj, s.tenant, reader); err != nil {
-		return err
+	// Discovery never dereferences dataset IDs. Avoid fetching full block
+	// metadata and mapping pages for those queries; lookup still validates all
+	// references before any can be used to select profile datasets.
+	if validateReferences {
+		if err := validateAttributeIndexReferences(ctx, s.obj, s.tenant, reader); err != nil {
+			return err
+		}
 	}
 	s.attributeIndex = reader
 	return nil

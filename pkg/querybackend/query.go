@@ -169,18 +169,49 @@ func (b *blockContext) datasetIndices() []*metastorev1.Dataset {
 		return nil
 	}
 
-	// If the query only requires TSDB data, retain only the TSDB pseudo-
-	// datasets: AttributeIndexV1 selects profile datasets and cannot answer an
-	// index-only request itself.
+	// Index-only requests execute directly against the selected indexes rather
+	// than resolving profile datasets. Only explicitly supported handlers may
+	// run against an attribute index.
 	s := (&queryContext{blockContext: b}).sections()
 	indexOnly := len(s) == 1 && s[0] == block.SectionTSDB
 	if indexOnly {
 		md.Datasets = tsdbIndices
+		if supportsAttributeMetadataQueries(b.req.src.Query) {
+			md.Datasets = b.preferredIndices(tsdbIndices, attributeIndices)
+		}
 		b.obj.SetMetadata(md)
-		oteltrace.SpanFromContext(b.ctx).SetAttributes(attribute.Bool("dataset_index_query_index_only", true))
+		attributeCount := 0
+		for _, ds := range md.Datasets {
+			if block.DatasetFormat(ds.Format) == block.DatasetFormat2 {
+				attributeCount++
+			}
+		}
+		oteltrace.SpanFromContext(b.ctx).SetAttributes(
+			attribute.Bool("dataset_index_query_index_only", true),
+			attribute.Int("metadata_attribute_index_count", attributeCount),
+			attribute.Int("metadata_tsdb_index_count", len(md.Datasets)-attributeCount),
+		)
 		return nil
 	}
 
+	return b.preferredIndices(tsdbIndices, attributeIndices)
+}
+
+func supportsAttributeMetadataQueries(queries []*queryv1.Query) bool {
+	if len(queries) == 0 {
+		return false
+	}
+	for _, query := range queries {
+		switch query.QueryType {
+		case queryv1.QueryType_QUERY_LABEL_NAMES, queryv1.QueryType_QUERY_LABEL_VALUES, queryv1.QueryType_QUERY_SERIES_LABELS:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (b *blockContext) preferredIndices(tsdbIndices, attributeIndices []*metastorev1.Dataset) []*metastorev1.Dataset {
 	if b.req.src.Options == nil || !b.req.src.Options.UseAttributeIndex || len(attributeIndices) == 0 {
 		return tsdbIndices
 	}
@@ -192,7 +223,7 @@ func (b *blockContext) datasetIndices() []*metastorev1.Dataset {
 	for _, ds := range attributeIndices {
 		attributeTenants[ds.Tenant] = struct{}{}
 	}
-	indices := attributeIndices
+	indices := append([]*metastorev1.Dataset(nil), attributeIndices...)
 	for _, ds := range tsdbIndices {
 		if _, ok := attributeTenants[ds.Tenant]; !ok {
 			indices = append(indices, ds)
@@ -309,6 +340,10 @@ type queryContext struct {
 }
 
 func (q *queryContext) execute(query *queryv1.Query) error {
+	// Handlers for one dataset run concurrently. Keep each handler's tracing
+	// context local while sharing the reference-counted dataset and group.
+	local := *q
+	q = &local
 	var span *tracing.Span
 	span, q.ctx = tracing.StartSpanFromContext(q.ctx, "executeQuery."+util.ToCamel(query.QueryType.String()))
 	defer span.Finish()
@@ -317,7 +352,14 @@ func (q *queryContext) execute(query *queryv1.Query) error {
 		return err
 	}
 
-	if err = q.ds.Open(q.ctx, q.sections()...); err != nil {
+	sections := q.sections()
+	if block.DatasetFormat(q.ds.Metadata().Format) == block.DatasetFormat2 {
+		if !supportsAttributeMetadataQueries(q.req.src.Query) {
+			return fmt.Errorf("attribute index cannot execute non-metadata queries")
+		}
+		sections = []block.Section{block.SectionAttributeMetadata}
+	}
+	if err = q.ds.Open(q.ctx, sections...); err != nil {
 		if q.obj.IsNotExists(err) {
 			level.Warn(q.log).Log("msg", "object not found", "err", err)
 			return nil

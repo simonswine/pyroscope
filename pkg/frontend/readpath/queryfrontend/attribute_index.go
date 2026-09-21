@@ -8,13 +8,14 @@ import (
 )
 
 // AttributeIndexHeader opts a request into experimental AttributeIndexV1
-// dataset lookup. Requests without this header retain TSDB index lookup.
+// dataset lookup and index-only metadata queries. Requests without this header
+// retain TSDB execution.
 const AttributeIndexHeader = "X-Pyroscope-Use-Attribute-Index"
 
 type attributeIndexContextKey struct{}
 
 // WithAttributeIndex records whether a query should prefer AttributeIndexV1
-// dataset lookup. It is exported for internal callers and tests that do not
+// dataset lookup and index-only metadata queries. It is exported for callers that do not
 // enter through the public Connect handler.
 func WithAttributeIndex(ctx context.Context, enabled bool) context.Context {
 	return context.WithValue(ctx, attributeIndexContextKey{}, enabled)

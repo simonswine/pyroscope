@@ -27,7 +27,13 @@ func init() {
 }
 
 func querySeriesLabels(q *queryContext, query *queryv1.Query) (*queryv1.Report, error) {
-	series, err := getSeriesLabels(q.ds.Index(), q.req.matchers, query.SeriesLabels.LabelNames...)
+	var series []*typesv1.Labels
+	var err error
+	if block.DatasetFormat(q.ds.Metadata().Format) == block.DatasetFormat2 {
+		series, err = attributeSeriesLabels(q.ctx, q.ds.AttributeIndex(), q.req.matchers, query.SeriesLabels.LabelNames...)
+	} else {
+		series, err = getSeriesLabels(q.ds.Index(), q.req.matchers, query.SeriesLabels.LabelNames...)
+	}
 	if err != nil {
 		return nil, err
 	}
