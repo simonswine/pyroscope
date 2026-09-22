@@ -172,14 +172,9 @@ func replayDump(ctx context.Context, params *replayDumpParams) (err error) {
 	startNanos := from.UnixNano()
 	endNanos := to.UnixNano()
 
-	var totalProfiles int
-	for _, md := range resp.Blocks {
-		n, dErr := dumpBlock(ctx, bucket, md, matchers, startNanos, endNanos, rw)
-		if dErr != nil {
-			return fmt.Errorf("failed to dump block %s: %w", md.Id, dErr)
-		}
-		totalProfiles += n
-		level.Debug(logger).Log("msg", "dumped block", "block", md.Id, "profiles", n)
+	totalProfiles, err := dumpBlocks(ctx, bucket, resp.Blocks, matchers, startNanos, endNanos, rw, filepath.Dir(params.Output))
+	if err != nil {
+		return err
 	}
 
 	if err := rw.Flush(); err != nil {
@@ -204,7 +199,7 @@ func dumpBlock(
 	md *metastorev1.BlockMeta,
 	matchers []*labels.Matcher,
 	startNanos, endNanos int64,
-	rw *replayWriter,
+	rw replayRecordWriter,
 ) (int, error) {
 	obj := block.NewObject(bucket, md)
 
@@ -230,7 +225,7 @@ func dumpDataset(
 	dsMeta *metastorev1.Dataset,
 	matchers []*labels.Matcher,
 	startNanos, endNanos int64,
-	rw *replayWriter,
+	rw replayRecordWriter,
 ) (int, error) {
 	ds := block.NewDataset(dsMeta, obj)
 	if err := ds.Open(ctx, block.SectionTSDB, block.SectionProfiles, block.SectionSymbols); err != nil {
@@ -244,8 +239,16 @@ func dumpDataset(
 	}
 	defer it.Close()
 
+	// Keep each full symbol partition (including its stacktrace trees) loaded
+	// until all rows have been processed. Rows are series-, not partition-ordered.
+	symbols := &replaySymbols{source: ds.Symbols(), partitions: make(map[uint64]symdb.PartitionReader)}
+	defer symbols.Close()
+
 	var count int
 	for it.Next() {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
 		entry := it.At()
 
 		if entry.Timestamp < startNanos || entry.Timestamp > endNanos {
@@ -255,7 +258,7 @@ func dumpDataset(
 			continue
 		}
 
-		pprofBytes, err := buildPprofForRow(ctx, ds, entry)
+		pprofBytes, err := buildPprofForRow(ctx, symbols, entry)
 		if err != nil {
 			// Skip individual profiles that fail to reconstruct/marshal rather
 			// than aborting the whole dump: a best-effort dump of the
@@ -293,8 +296,8 @@ func matchesAll(matchers []*labels.Matcher, ls phlaremodel.Labels) bool {
 // bytes) from a single profile row, resolving its stack traces via the
 // dataset's symbol table. A new symdb.Resolver is used per profile, as
 // documented on symdb.Resolver.
-func buildPprofForRow(ctx context.Context, ds *block.Dataset, entry block.ProfileEntry) ([]byte, error) {
-	resolver := symdb.NewResolver(ctx, ds.Symbols())
+func buildPprofForRow(ctx context.Context, symbols symdb.SymbolsReader, entry block.ProfileEntry) ([]byte, error) {
+	resolver := symdb.NewResolver(ctx, symbols)
 	defer resolver.Release()
 
 	entry.Row.ForStacktraceIdsAndValues(func(stacktraceIDs, values []parquet.Value) {

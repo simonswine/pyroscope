@@ -558,7 +558,9 @@ These commands work with Pyroscope v2 deployments. `replay dump` reads directly 
 
 ### Dump profiles to a file
 
-The `profilecli replay dump` command queries the source deployment's metastore for blocks that match your query and time range, reads those blocks from object storage, reconstructs individual pprof profiles with their original labels and timestamps, and writes them to a dump file.
+The `profilecli replay dump` command queries the source deployment's metastore for blocks that match your query and time range, reads those blocks from object storage, reconstructs individual pprof profiles with their original labels and timestamps, and writes them to a time-ordered dump file.
+
+The dump processes up to four blocks in parallel and reuses loaded stacktrace trees and symbols across profiles in each dataset. Profiles are written to per-block temporary files alongside the output, then assembled in timestamp order without loading all profile payloads into memory. Allow disk space for both the temporary profiles and the final dump (approximately twice the final dump size). Temporary files are removed on completion or failure.
 
 Configure the source with these flags:
 
