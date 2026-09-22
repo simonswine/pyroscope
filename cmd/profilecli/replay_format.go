@@ -13,7 +13,8 @@ import (
 
 // The replay dump file is a simple, self-contained, streamable archive of
 // individually reconstructed pprof profiles, together with their original
-// series labels and timestamps. It is produced by `profilecli replay dump`
+// series labels and timestamps. Records are timestamp ordered, allowing
+// replay to stream them with bounded memory. It is produced by `profilecli replay dump`
 // and consumed by `profilecli replay push`.
 //
 // File layout:

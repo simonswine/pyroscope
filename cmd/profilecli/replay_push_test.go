@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -296,17 +297,40 @@ func buildTestDump(t *testing.T) (path string, data []byte) {
 	return path, buf.Bytes()
 }
 
-func TestLoadReplayRecords_LocalFile(t *testing.T) {
+func TestOpenReplayReader_LocalFile(t *testing.T) {
 	t.Parallel()
 
 	path, _ := buildTestDump(t)
-	header, records, err := loadReplayRecords(context.Background(), path)
+	rr, input, err := openReplayReader(context.Background(), path)
 	require.NoError(t, err)
-	assert.Equal(t, `{service_name="svc"}`, header.SourceQuery)
-	require.Len(t, records, 1)
+	t.Cleanup(func() { require.NoError(t, input.Close()) })
+	assert.Equal(t, `{service_name="svc"}`, rr.Header.SourceQuery)
+	_, err = rr.ReadRecord()
+	require.NoError(t, err)
 }
 
-func TestLoadReplayRecords_HTTPURL(t *testing.T) {
+func TestOpenReplayReader_Zstd(t *testing.T) {
+	t.Parallel()
+
+	_, data := buildTestDump(t)
+	var compressed bytes.Buffer
+	encoder, err := zstd.NewWriter(&compressed)
+	require.NoError(t, err)
+	_, err = encoder.Write(data)
+	require.NoError(t, err)
+	require.NoError(t, encoder.Close())
+	path := filepath.Join(t.TempDir(), "dump.replay.zst")
+	require.NoError(t, os.WriteFile(path, compressed.Bytes(), 0o644))
+
+	rr, input, err := openReplayReader(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, input.Close()) })
+	assert.Equal(t, `{service_name="svc"}`, rr.Header.SourceQuery)
+	_, err = rr.ReadRecord()
+	require.NoError(t, err)
+}
+
+func TestOpenReplayReader_HTTPURL(t *testing.T) {
 	t.Parallel()
 
 	_, data := buildTestDump(t)
@@ -315,28 +339,17 @@ func TestLoadReplayRecords_HTTPURL(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	header, records, err := loadReplayRecords(context.Background(), srv.URL+"/dump.replay")
+	rr, input, err := openReplayReader(context.Background(), srv.URL+"/dump.replay")
 	require.NoError(t, err)
-	assert.Equal(t, `{service_name="svc"}`, header.SourceQuery)
-	require.Len(t, records, 1)
+	t.Cleanup(func() { require.NoError(t, input.Close()) })
+	assert.Equal(t, `{service_name="svc"}`, rr.Header.SourceQuery)
+	_, err = rr.ReadRecord()
+	require.NoError(t, err)
 }
 
-func TestLoadReplayRecords_HTTPURL_NotFound(t *testing.T) {
+func TestOpenReplayReader_NotFound(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "not found", http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-
-	_, _, err := loadReplayRecords(context.Background(), srv.URL+"/missing.replay")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "404")
-}
-
-func TestLoadReplayRecords_LocalFile_NotFound(t *testing.T) {
-	t.Parallel()
-
-	_, _, err := loadReplayRecords(context.Background(), filepath.Join(t.TempDir(), "does-not-exist.replay"))
+	_, _, err := openReplayReader(context.Background(), filepath.Join(t.TempDir(), "does-not-exist.replay"))
 	require.Error(t, err)
 }

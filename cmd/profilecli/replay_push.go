@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -16,7 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/go-kit/log/level"
 	"github.com/google/uuid"
-	"github.com/grafana/dskit/runutil"
+	"github.com/klauspost/compress/zstd"
 
 	pushv1 "github.com/grafana/pyroscope/api/gen/proto/go/push/v1"
 	"github.com/grafana/pyroscope/api/gen/proto/go/push/v1/pushv1connect"
@@ -50,47 +50,9 @@ func addReplayPushParams(cmd commander) *replayPushParams {
 	return params
 }
 
-// loadReplayRecords reads the entire dump file into memory, sorted by
-// timestamp. Dump files are expected to be bounded in size (a debug/backup
-// tool, not a bulk data-transfer mechanism), so loading them fully allows
-// the replay loop to schedule pushes precisely without re-reading the file.
-//
-// input may be a local file path or an http(s) URL.
-func loadReplayRecords(ctx context.Context, input string) (replayHeader, []replayRecord, error) {
-	r, err := openReplayInput(ctx, input)
-	if err != nil {
-		return replayHeader{}, nil, err
-	}
-	defer runutil.CloseWithLogOnErr(logger, r, "failed to close replay dump input")
-
-	rr, err := newReplayReader(r)
-	if err != nil {
-		return replayHeader{}, nil, err
-	}
-
-	var records []replayRecord
-	for {
-		rec, err := rr.ReadRecord()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return replayHeader{}, nil, err
-		}
-		records = append(records, rec)
-	}
-
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].TimestampNanos < records[j].TimestampNanos
-	})
-
-	return rr.Header, records, nil
-}
-
-// openReplayInput opens input for reading, transparently supporting either a
-// local file path or an http(s) URL (e.g. a signed object storage URL, or a
-// dump file served over HTTP). The returned io.ReadCloser must always be
-// closed once the reader is no longer needed.
+// openReplayInput opens a local file or HTTP(S) URL and detects an optional
+// outer Zstandard stream from its first four bytes. The returned reader always
+// yields the replay format itself, not its optional transport compression.
 func openReplayInput(ctx context.Context, input string) (io.ReadCloser, error) {
 	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, input, nil)
@@ -106,14 +68,51 @@ func openReplayInput(ctx context.Context, input string) (io.ReadCloser, error) {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("failed to fetch replay dump file: unexpected status %s: %s", resp.Status, string(body))
 		}
-		return resp.Body, nil
+		return replayInputReader(resp.Body), nil
 	}
 
 	f, err := os.Open(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open replay dump file: %w", err)
 	}
-	return f, nil
+	return replayInputReader(f), nil
+}
+
+var replayZstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+
+type replayInputReadCloser struct {
+	io.Reader
+	close func() error
+}
+
+func (r replayInputReadCloser) Close() error { return r.close() }
+
+func replayInputReader(r io.ReadCloser) io.ReadCloser {
+	br := bufio.NewReader(r)
+	magic, err := br.Peek(len(replayZstdMagic))
+	if err == nil && string(magic) == string(replayZstdMagic) {
+		decoder, err := zstd.NewReader(br)
+		if err == nil {
+			return replayInputReadCloser{Reader: decoder, close: func() error {
+				decoder.Close()
+				return r.Close()
+			}}
+		}
+	}
+	return replayInputReadCloser{Reader: br, close: r.Close}
+}
+
+func openReplayReader(ctx context.Context, input string) (*replayReader, io.ReadCloser, error) {
+	r, err := openReplayInput(ctx, input)
+	if err != nil {
+		return nil, nil, err
+	}
+	rr, err := newReplayReader(r)
+	if err != nil {
+		_ = r.Close()
+		return nil, nil, err
+	}
+	return rr, r, nil
 }
 
 func replayPush(ctx context.Context, params *replayPushParams) error {
@@ -130,36 +129,38 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	level.Info(logger).Log("msg", "loading replay dump file", "input", params.Input)
-	header, records, err := loadReplayRecords(ctx, params.Input)
+	level.Info(logger).Log("msg", "opening replay dump file", "input", params.Input)
+	rr, input, err := openReplayReader(ctx, params.Input)
 	if err != nil {
 		return err
 	}
-	if len(records) == 0 {
+	_, err = rr.ReadRecord()
+	closeErr := input.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close replay dump input: %w", closeErr)
+	}
+	if errors.Is(err, io.EOF) {
 		return errors.New("replay dump file contains no profiles")
 	}
-	// Only a single tenant is supported for now: push sends everything to one
-	// destination tenant (X-Scope-OrgID), so a multi-tenant dump would
-	// silently merge tenants on replay.
+	header := rr.Header
 	if len(header.Tenants) > 1 {
 		return fmt.Errorf("replay dump file contains %d tenants (%s); only single-tenant dumps are supported", len(header.Tenants), strings.Join(header.Tenants, ", "))
 	}
 
-	minTs := records[0].TimestampNanos
-	maxTs := records[len(records)-1].TimestampNanos
-	cycleDuration := time.Duration(maxTs - minTs)
+	cycleDuration := time.Duration(header.To-header.From) * time.Millisecond
 	if cycleDuration <= 0 {
-		level.Warn(logger).Log("msg", "dump window has no measurable duration (single timestamp); replaying once per second", "profiles", len(records))
+		level.Warn(logger).Log("msg", "dump window has no measurable duration; replaying once per second")
 		cycleDuration = time.Second
 	}
-
 	level.Info(logger).Log("msg", "starting replay push",
-		"input", params.Input, "profiles", len(records), "cycle_duration", cycleDuration,
-		"source_query", header.SourceQuery, "loop", params.Loop, "speed", params.Speed,
-		"batch_size", params.BatchSize, "batch_wait", params.BatchWait, "destination", params.URL)
+		"input", params.Input, "cycle_duration", cycleDuration, "source_query", header.SourceQuery,
+		"loop", params.Loop, "speed", params.Speed, "batch_size", params.BatchSize,
+		"batch_wait", params.BatchWait, "destination", params.URL)
 
 	pc := params.pusherClient()
-
 	startWall := time.Now()
 	for cycle := 0; ; cycle++ {
 		if ctx.Err() != nil {
@@ -169,19 +170,33 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 		cycleStart := startWall.Add(cycleOffset)
 		level.Info(logger).Log("msg", "starting replay cycle", "cycle", cycle, "scheduled_start", cycleStart)
 
-		pushed, failed, interrupted := runReplayCycle(ctx, pc, records, minTs, cycleStart, params)
-
-		if interrupted {
-			level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
-			return nil
+		rr, input, err := openReplayReader(ctx, params.Input)
+		if err != nil {
+			return err
 		}
-		level.Info(logger).Log("msg", "replay cycle complete", "cycle", cycle, "pushed", pushed, "failed", failed)
-
+		first, err := rr.ReadRecord()
+		if err == nil {
+			pushed, failed, interrupted, runErr := runReplayReaderCycle(ctx, pc, rr, first, cycleStart, params)
+			closeErr := input.Close()
+			if runErr != nil {
+				return runErr
+			}
+			if closeErr != nil {
+				return fmt.Errorf("failed to close replay dump input: %w", closeErr)
+			}
+			if interrupted {
+				level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
+				return nil
+			}
+			level.Info(logger).Log("msg", "replay cycle complete", "cycle", cycle, "pushed", pushed, "failed", failed)
+		} else {
+			_ = input.Close()
+			return fmt.Errorf("failed to read first replay record: %w", err)
+		}
 		if !params.Loop {
 			break
 		}
 	}
-
 	return nil
 }
 
@@ -191,6 +206,84 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 // the batch became due. Batching a whole cycle's worth of profiles into far
 // fewer push requests keeps up with schedules that would otherwise require
 // hundreds of individual round-trips per second.
+// runReplayReaderCycle streams one timestamp-ordered dump cycle. It retains
+// only the current push batch and one look-ahead record in memory.
+func runReplayReaderCycle(
+	ctx context.Context,
+	pc pushv1connect.PusherServiceClient,
+	rr *replayReader,
+	first replayRecord,
+	cycleStart time.Time,
+	params *replayPushParams,
+) (pushed, failed int, interrupted bool, err error) {
+	scheduledTarget := func(rec replayRecord) time.Time {
+		return cycleStart.Add(time.Duration(float64(rec.TimestampNanos-first.TimestampNanos) / params.Speed))
+	}
+	current := first
+	lastTimestamp := first.TimestampNanos
+	lastProgressLog := time.Now()
+	for {
+		if ctx.Err() != nil {
+			return pushed, failed, true, nil
+		}
+		firstTarget := scheduledTarget(current)
+		if !waitUntil(ctx, firstTarget) {
+			return pushed, failed, true, nil
+		}
+		batch := make([]*pushv1.RawProfileSeries, 0, params.BatchSize)
+		for {
+			series, buildErr := buildSeries(current, scheduledTarget(current))
+			if buildErr != nil {
+				failed++
+				level.Error(logger).Log("msg", "failed to prepare replayed profile", "err", buildErr)
+			} else {
+				batch = append(batch, series)
+			}
+
+			next, readErr := rr.ReadRecord()
+			if errors.Is(readErr, io.EOF) {
+				current = replayRecord{}
+				if len(batch) > 0 {
+					if pushErr := pushBatch(ctx, pc, batch); pushErr != nil {
+						failed += len(batch)
+						level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", pushErr)
+					} else {
+						pushed += len(batch)
+					}
+				}
+				return pushed, failed, false, nil
+			}
+			if readErr != nil {
+				return pushed, failed, false, fmt.Errorf("failed to read replay record: %w", readErr)
+			}
+			if next.TimestampNanos < lastTimestamp {
+				return pushed, failed, false, errors.New("replay dump records are not timestamp ordered")
+			}
+			lastTimestamp = next.TimestampNanos
+			if len(batch) == params.BatchSize || scheduledTarget(next).After(firstTarget.Add(params.BatchWait)) {
+				if len(batch) > 0 {
+					if pushErr := pushBatch(ctx, pc, batch); pushErr != nil {
+						failed += len(batch)
+						level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", pushErr)
+					} else {
+						pushed += len(batch)
+					}
+				}
+				current = next
+				break
+			}
+			if !waitUntil(ctx, scheduledTarget(next)) {
+				return pushed, failed, true, nil
+			}
+			current = next
+		}
+		if time.Since(lastProgressLog) >= progressLogInterval {
+			level.Info(logger).Log("msg", "replay progress", "pushed", pushed, "failed", failed)
+			lastProgressLog = time.Now()
+		}
+	}
+}
+
 func runReplayCycle(
 	ctx context.Context,
 	pc pushv1connect.PusherServiceClient,
