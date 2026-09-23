@@ -224,7 +224,7 @@ func (c *Cluster) v2ReadyCheckComponent(ctx context.Context, t *Component) (bool
 	return false, nil
 }
 
-// for the metastore, we need to check that the first replica is the leader, as this is configured statically as the client for other components.
+// The last metastore replica must be the leader, as clients use its static address.
 func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Component, expectedLeader *Component) error {
 	expectedPeers := len(metastores)
 
@@ -235,6 +235,7 @@ func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Co
 	if err != nil {
 		return err
 	}
+	defer cc.Close()
 
 	client := raftnodepb.NewRaftNodeServiceClient(cc)
 
@@ -258,14 +259,14 @@ func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Co
 		return nil
 	}
 
-	// if we are replica 0 we are done as we are already leader
+	// If the expected replica is already leader, no transfer is needed.
 	if comp.replica == expectedPeers-1 {
 		return nil
 	}
 
-	// promote last metastore to new leader
+	// Raft identifies peers by server ID, not by the address/ID endpoint used by clients.
 	_, err = client.PromoteToLeader(ctx, &raftnodepb.PromoteToLeaderRequest{
-		ServerId:    fmt.Sprintf("%s:%d/%s", listenAddr, expectedLeader.raftPort, expectedLeader.nodeName()),
+		ServerId:    expectedLeader.nodeName(),
 		CurrentTerm: nodeInfo.Node.CurrentTerm,
 	})
 	return err
