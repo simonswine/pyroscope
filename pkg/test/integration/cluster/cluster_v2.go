@@ -126,10 +126,8 @@ func (c *Cluster) CompactionJobsFinished(ctx context.Context) (float64, error) {
 }
 
 func (c *Cluster) v2Prepare(_ context.Context, memberlistJoin []string) error {
-	metastoreLeader := c.metastoreExpectedLeader()
-
 	for _, comp := range c.Components {
-		if err := c.v2PrepareComponent(comp, metastoreLeader); err != nil {
+		if err := c.v2PrepareComponent(comp, c.MetastoreAddress()); err != nil {
 			return err
 		}
 
@@ -142,7 +140,7 @@ func (c *Cluster) v2Prepare(_ context.Context, memberlistJoin []string) error {
 	return nil
 }
 
-func (c *Cluster) v2PrepareComponent(comp *Component, metastoreLeader *Component) error {
+func (c *Cluster) v2PrepareComponent(comp *Component, metastoreAddress string) error {
 	dataDir := c.dataDir(comp)
 
 	comp.flags = c.commonFlags(comp)
@@ -151,7 +149,7 @@ func (c *Cluster) v2PrepareComponent(comp *Component, metastoreLeader *Component
 		"-architecture.storage=v2",
 		"-querier.query-tree-enabled=true", // always enable the tree based SelectMergeProfiles
 		"-metastore.min-ready-duration=0",
-		fmt.Sprintf("-metastore.address=%s:%d/%s", listenAddr, metastoreLeader.grpcPort, metastoreLeader.nodeName()),
+		"-metastore.address="+metastoreAddress,
 	)
 
 	if c.debuginfodURL != "" && comp.Target == "query-frontend" {
@@ -221,7 +219,7 @@ func (c *Cluster) v2ReadyCheckComponent(ctx context.Context, t *Component) (bool
 	case "metastore":
 		return true, t.metastoreReadyCheck(ctx, c.metastores(), c.metastoreExpectedLeader())
 	case "distributor":
-		return true, t.distributorReadyCheck(ctx, 0, len(c.perTarget["segment-writer"]), len(c.perTarget["distributor"]))
+		return true, t.distributorReadyCheck(ctx, 0, len(c.perTarget["distributor"]), len(c.perTarget["segment-writer"]))
 	}
 	return false, nil
 }
@@ -294,7 +292,7 @@ func (c *Cluster) AddMetastoreWithAutoJoin(ctx context.Context) error {
 	c.Components = append(c.Components, comp)
 	c.perTarget["metastore"] = append(c.perTarget["metastore"], len(c.Components)-1)
 
-	if err := c.v2PrepareComponent(comp, leader); err != nil {
+	if err := c.v2PrepareComponent(comp, fmt.Sprintf("%s:%d/%s", listenAddr, leader.grpcPort, leader.nodeName())); err != nil {
 		return err
 	}
 	comp.flags = append(comp.flags, "-metastore.raft.auto-join=true")

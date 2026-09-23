@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +22,17 @@ import (
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
 	"github.com/grafana/pyroscope/v2/pkg/pprof"
 )
+
+func TestReplayPushCLIFlags(t *testing.T) {
+	app := kingpin.New("profilecli", "test replay arguments")
+	push := app.Command("replay", "replay").Command("push", "push")
+	params := addReplayPushParams(push)
+	command, err := app.Parse([]string{"replay", "push", "--input=fixture.replay", "--no-loop", "--url=http://127.0.0.1:4040", "--tenant-id=benchmark"})
+	require.NoError(t, err)
+	require.Equal(t, "replay push", command)
+	require.False(t, params.Loop)
+	require.Equal(t, "fixture.replay", params.Input)
+}
 
 // fakePusherClient records every push request it receives.
 type fakePusherClient struct {

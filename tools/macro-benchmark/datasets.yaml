@@ -1,0 +1,14 @@
+# Public GCS objects pinned by generation, size and CRC32C (base64).
+# Metadata checked on 2026-09-22. Checksums cover compressed bytes for .zst files.
+full-tenant:
+  url: https://storage.googleapis.com/pyroscope-sample-data/3500-services-5min.replay.zst?generation=1790088792036149
+  size_bytes: 7171041968
+  crc32c: LejvQQ==
+high-volume-service:
+  url: https://storage.googleapis.com/pyroscope-sample-data/high-volume-service-2h.replay.zst?generation=1790088492848813
+  size_bytes: 19319571496
+  crc32c: 29OTSg==
+checkoutservice:
+  url: https://storage.googleapis.com/pyroscope-sample-data/checkoutservice-1-hour.replay?generation=1784809765684326
+  size_bytes: 29880411
+  crc32c: qwpAbQ==
