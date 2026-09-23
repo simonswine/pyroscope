@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -129,7 +128,7 @@ func addReplayPushParams(cmd commander) *replayPushParams {
 	cmd.Flag("speed", "Time-scale multiplier for replay speed (2 replays twice as fast, 0.5 half as fast).").Default("1").Float64Var(&params.Speed)
 	cmd.Flag("batch-size", "Maximum number of profiles to send in a single push request.").Default("100").IntVar(&params.BatchSize)
 	cmd.Flag("batch-wait", "Maximum time to accumulate a batch before flushing it, once the first profile in the batch becomes due.").Default("500ms").DurationVar(&params.BatchWait)
-	cmd.Flag("workers", "Number of concurrent push workers. Each worker sends one batch at a time; increasing this hides network round-trip latency.").Default(fmt.Sprintf("%d", runtime.GOMAXPROCS(0))).IntVar(&params.Workers)
+	cmd.Flag("workers", "Number of concurrent push workers. Each worker sends one batch at a time; increasing this hides network round-trip latency.").Default("16").IntVar(&params.Workers)
 	cmd.Flag("sha256", "Expected SHA-256 hex digest of the raw (compressed) input file. If set, the digest is verified after each read pass; an error is returned on mismatch. When omitted the computed digest is still logged.").StringVar(&params.ExpectedSHA256)
 	return params
 }
