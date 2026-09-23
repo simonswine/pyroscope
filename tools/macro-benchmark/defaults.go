@@ -2,6 +2,10 @@ package main
 
 func defaultDatasets() map[string]datasetPreset {
 	return map[string]datasetPreset{
+		"checkout-service": {
+			URL:       "https://storage.googleapis.com/pyroscope-sample-data/checkoutservice-1-hour.replay?generation=1784809765684326",
+			SizeBytes: 29880411,
+		},
 		"full-tenant": {
 			URL:       "https://storage.googleapis.com/pyroscope-sample-data/3500-services-5min.replay.zst?generation=1790169551127284",
 			SizeBytes: 7171041968,

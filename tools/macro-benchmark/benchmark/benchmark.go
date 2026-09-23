@@ -3,6 +3,7 @@ package benchmark
 
 import (
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/all-series"
+	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/checkout-service"
 	"github.com/grafana/pyroscope/macro-benchmark/benchmark/internal/registry"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/label-names"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-dot"
