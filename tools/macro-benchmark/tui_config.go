@@ -232,9 +232,11 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 					displayVal = value + rev + " " + reset
 				}
 			}
-			row := fmt.Sprintf("%s%s%-16s%s %s%-40s%s%s",
-				prefix, labelStyle, label+reset, reset,
-				valStyle, displayVal, reset,
+			paddedLabel := fmt.Sprintf("%-16s", label)
+			paddedVal := padVisual(valStyle+displayVal, 40)
+			row := fmt.Sprintf("%s%s%s%s %s%s%s",
+				prefix, labelStyle, paddedLabel, reset,
+				paddedVal, reset,
 				hintStr)
 			line(row)
 		}
@@ -503,6 +505,35 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ansiStripRe matches ANSI escape sequences so we can measure visual width.
+var ansiStripRe = func() func(string) string {
+	// Simple state-machine strip: ESC [ ... <final byte 0x40-0x7e>
+	return func(s string) string {
+		var out []rune
+		runes := []rune(s)
+		for i := 0; i < len(runes); i++ {
+			if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+				i += 2
+				for i < len(runes) && (runes[i] < 0x40 || runes[i] > 0x7e) {
+					i++
+				}
+				continue
+			}
+			out = append(out, runes[i])
+		}
+		return string(out)
+	}
+}()
+
+// padVisual left-justifies s in a field of visual width n, ignoring ANSI codes.
+func padVisual(s string, n int) string {
+	visual := len([]rune(ansiStripRe(s)))
+	if visual >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-visual)
 }
 
 // filterPrint removes control characters that could corrupt the display.
