@@ -21,10 +21,10 @@ type Definition = registry.Benchmark
 func All() []Definition { return registry.All() }
 
 // Names returns the registered benchmarks for a dataset. Custom fixtures use
-// the checkoutservice suite.
+// the full-tenant suite.
 func Names(dataset string) []string {
 	if dataset == "" {
-		dataset = "checkoutservice"
+		dataset = "full-tenant"
 	}
 	return registry.Names(dataset)
 }

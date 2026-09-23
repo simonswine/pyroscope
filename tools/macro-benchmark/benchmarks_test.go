@@ -9,7 +9,7 @@ import (
 
 func TestBenchmarkNames(t *testing.T) {
 	seen := map[string]bool{}
-	for dataset, count := range map[string]int{"full-tenant": 3, "high-volume-service": 4, "checkoutservice": 3} {
+	for dataset, count := range map[string]int{"full-tenant": 6, "high-volume-service": 4} {
 		names := benchmarkNames(dataset)
 		if len(names) != count {
 			t.Fatalf("%s: expected %d benchmarks, got %v", dataset, count, names)
@@ -34,7 +34,7 @@ func TestBenchmarkNames(t *testing.T) {
 			t.Errorf("benchmark %s is not selected by any dataset", entry.Name())
 		}
 	}
-	if !slices.Equal(benchmarkNames(""), benchmarkNames("checkoutservice")) {
-		t.Fatal("custom fixtures should default to checkoutservice benchmarks")
+	if !slices.Equal(benchmarkNames(""), benchmarkNames("full-tenant")) {
+		t.Fatal("custom fixtures should default to full-tenant benchmarks")
 	}
 }
