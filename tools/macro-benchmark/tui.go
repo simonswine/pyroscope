@@ -56,8 +56,8 @@ func runTUI(ctx context.Context) error {
 
 	selected := 0
 	message := "Saved checkpoints shown. r reconciles with AWS; it never replays a started worker."
-	var confirm byte
-	var confirmID string
+	var confirm *tuiConfirmation
+	var keys tuiKeys
 	var cancel context.CancelFunc
 	var done chan error
 	defer func() {
@@ -97,7 +97,8 @@ func runTUI(ctx context.Context) error {
 		if selected < 0 {
 			selected = 0
 		}
-		renderTUI(tty, root, states, selected, message, cancel != nil)
+		width, height := terminalSize(tty)
+		_, _ = io.WriteString(tty, tuiDisplayWithConfirmation(width, height, root, states, selected, message, cancel != nil, confirm))
 		// Darwin's poll reports POLLNVAL for /dev/tty; select works on both
 		// macOS controllers and Linux without a permanently blocked reader.
 		var readable unix.FdSet
@@ -125,114 +126,158 @@ func runTUI(ctx context.Context) error {
 		if n == 0 {
 			return nil
 		}
-		key := buf[0]
-		if key == 'q' || key == 3 || key == 4 {
-			return nil
-		}
-		if confirm != 0 {
-			requested := confirm
-			confirm = 0
-			if key != 'Y' {
-				message = "Cancelled."
-				continue
-			}
-			if len(states) == 0 || states[selected].Config.RunID != confirmID {
-				message = "Selection changed; try again."
-				continue
-			}
-			if requested == 'd' {
-				start(states[selected], destroySession)
-			} else if requested == 's' {
-				start(states[selected], stopSession)
-			} else {
-				start(states[selected], resumeSession)
-			}
-			continue
-		}
-		switch key {
-		case 'j':
-			if selected+1 < len(states) {
-				selected++
-			}
-		case 'k':
-			if selected > 0 {
-				selected--
-			}
-		case 'h':
-			if len(states) == 0 {
-				continue
-			}
-			if err := interactiveSSH(ctx, tty, previous, states[selected]); err != nil {
-				message = "SSH: " + err.Error()
-			} else {
-				message = "SSH closed. Remote worker and AWS resources are unchanged."
-			}
-		case 'c':
-			if cancel != nil {
-				cancel()
-				message = "Detaching local operation; remote worker is unaffected."
-			}
-		case 'n':
-			if cancel != nil {
-				message = "Detach the active operation with c first."
-				continue
-			}
-			state, err := store.create("")
-			if err != nil {
-				return err
-			}
-			if err := configureRun(tty, store, state); err != nil {
-				message = "Draft created; configuration not changed: " + err.Error()
-			} else {
-				message = "Created " + state.Config.RunID + ". p prepares without launching AWS resources."
-			}
-			updated, err := store.list()
-			if err != nil {
-				return err
-			}
-			for i := range updated {
-				if updated[i].Config.RunID == state.Config.RunID {
-					selected = i
+		for _, key := range keys.feed(buf[:n]) {
+			if confirm != nil {
+				requested := confirm
+				confirm = nil
+				if key != 'Y' {
+					message = "Cancelled."
+					continue
 				}
-			}
-		case 'e', 'p', 'r', 's', 'd', 'g':
-			if cancel != nil {
-				message = "Detach the active operation with c first."
+				if len(states) == 0 || states[selected].Config.RunID != requested.runID {
+					message = "Selection changed; try again."
+					continue
+				}
+				switch requested.action {
+				case 'd':
+					start(states[selected], destroySession)
+				case 's':
+					start(states[selected], stopSession)
+				case 'r':
+					start(states[selected], resumeSession)
+				}
 				continue
 			}
-			if len(states) == 0 {
-				continue
+			if key == 'q' || key == 3 || key == 4 {
+				return nil
 			}
-			state := states[selected]
 			switch key {
-			case 'e':
-				if state.Phase != "draft" {
-					message = "Only draft sessions can be edited."
-				} else if err := configureRun(tty, store, &state); err != nil {
-					message = err.Error()
+			case 'j':
+				if selected+1 < len(states) {
+					selected++
+				}
+			case 'k':
+				if selected > 0 {
+					selected--
+				}
+			case 'h':
+				if len(states) == 0 {
+					continue
+				}
+				if err := interactiveSSH(ctx, tty, previous, states[selected]); err != nil {
+					message = "SSH: " + err.Error()
 				} else {
-					message = "Selection saved. p resolves refs and prepares the bundle."
+					message = "SSH closed. Remote worker and AWS resources are unchanged."
 				}
-			case 'p':
-				start(state, prepareSession)
-			case 'g':
-				start(state, func(ctx context.Context, _ *stateStore, s *sessionState) error { return collectSession(ctx, s) })
-			case 'r':
-				if state.Phase == "prepared" || state.Phase == "provisioning" {
-					confirm, confirmID = key, state.Config.RunID
-					message = "Launch/resume AWS provisioning? This incurs charges. Press Y to confirm; any other key cancels."
+			case 'c':
+				if cancel != nil {
+					cancel()
+					message = "Detaching local operation; remote worker is unaffected."
+				}
+			case 'n':
+				if cancel != nil {
+					message = "Detach the active operation with c first."
+					continue
+				}
+				state, err := store.create("")
+				if err != nil {
+					return err
+				}
+				if err := configureRun(tty, store, state); err != nil {
+					message = "Draft created; configuration not changed: " + err.Error()
 				} else {
-					start(state, resumeSession)
+					message = "Created " + state.Config.RunID + ". p prepares without launching AWS resources."
 				}
-			case 's', 'd':
-				confirm, confirmID = key, state.Config.RunID
-				message = "Stop worker (instance continues billing)? Press Y to confirm; any other key cancels."
-				if key == 'd' {
-					message = "DESTROY instance and its data? Collect results with g first. Press Y to confirm."
+				updated, err := store.list()
+				if err != nil {
+					return err
 				}
+				for i := range updated {
+					if updated[i].Config.RunID == state.Config.RunID {
+						selected = i
+					}
+				}
+			case 'e', 'p', 'r', 's', 'd', 'g':
+				if cancel != nil {
+					message = "Detach the active operation with c first."
+					continue
+				}
+				if len(states) == 0 {
+					continue
+				}
+				state := states[selected]
+				switch key {
+				case 'e':
+					if state.Phase != "draft" {
+						message = "Only draft sessions can be edited."
+					} else if err := configureRun(tty, store, &state); err != nil {
+						message = err.Error()
+					} else {
+						message = "Selection saved. p resolves refs and prepares the bundle."
+					}
+				case 'p':
+					start(state, prepareSession)
+				case 'g':
+					start(state, func(ctx context.Context, _ *stateStore, s *sessionState) error { return collectSession(ctx, s) })
+				case 'r':
+					if state.Phase == "prepared" || state.Phase == "provisioning" {
+						confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "LAUNCH / RESUME", detail: "AWS provisioning incurs charges."}
+					} else {
+						start(state, resumeSession)
+					}
+				case 's', 'd':
+					confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "STOP WORKER", detail: "The instance continues billing."}
+					if key == 'd' {
+						confirm.title = "DESTROY INSTANCE"
+						confirm.detail = "Instance data will be lost. Collect results with g first."
+					}
+				}
+			}
+			// Require a fresh keystroke after the popup has been drawn.
+			if confirm != nil {
+				break
 			}
 		}
 	}
+}
+
+type tuiConfirmation struct {
+	action byte
+	runID  string
+	title  string
+	detail string
+}
+
+// Decode arrow sequences even when the terminal splits them across reads.
+// An arrow is treated exactly like j/k on the session list.
+type tuiKeys struct{ escape int }
+
+func (k *tuiKeys) feed(input []byte) []byte {
+	var result []byte
+	for _, b := range input {
+		switch k.escape {
+		case 1:
+			k.escape = 0
+			if b == '[' || b == 'O' {
+				k.escape = 2
+			}
+		case 2:
+			k.escape = 0
+			switch b {
+			case 'A':
+				result = append(result, 'k')
+			case 'B':
+				result = append(result, 'j')
+			}
+		default:
+			if b == 27 {
+				k.escape = 1
+			} else {
+				result = append(result, b)
+			}
+		}
+	}
+	return result
 }
 
 func terminalText(s string, width int) string {
@@ -275,15 +320,19 @@ func interactiveSSH(ctx context.Context, tty *os.File, previous *term.State, sta
 	return cmd.Run()
 }
 
-func renderTUI(out *os.File, root string, states []sessionState, selected int, message string, busy bool) {
+func terminalSize(out *os.File) (int, int) {
 	width, height, err := term.GetSize(int(out.Fd()))
 	if err != nil || width < 1 || height < 1 {
-		width, height = 100, 30
+		return 100, 30
 	}
-	_, _ = io.WriteString(out, tuiDisplay(width, height, root, states, selected, message, busy))
+	return width, height
 }
 
 func tuiDisplay(width, height int, root string, states []sessionState, selected int, message string, busy bool) string {
+	return tuiDisplayWithConfirmation(width, height, root, states, selected, message, busy, nil)
+}
+
+func tuiDisplayWithConfirmation(width, height int, root string, states []sessionState, selected int, message string, busy bool, confirm *tuiConfirmation) string {
 	const (
 		reset = "\x1b[0m"
 		dim   = "\x1b[2m"
@@ -297,7 +346,7 @@ func tuiDisplay(width, height int, root string, states []sessionState, selected 
 	add(" Persistent sessions · AWS workers · Profiling at scale", dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
 	add(" NEW SESSION   n configure · all benchmarks selected by default", "")
-	add(fmt.Sprintf(" SESSIONS (%d)   j/k select · saved checkpoints; r refreshes", len(states)), cyan)
+	add(fmt.Sprintf(" SESSIONS (%d)   ↑/↓ or j/k select · saved checkpoints; r refreshes", len(states)), cyan)
 	selected = max(0, min(selected, len(states)-1))
 	first := 0
 	visible := max(1, height-21)
@@ -357,9 +406,33 @@ func tuiDisplay(width, height int, root string, states []sessionState, selected 
 	add(" EC2 keeps billing after quit/stop. Use d to destroy resources.", amber)
 	var display strings.Builder
 	display.WriteString("\x1b[H\x1b[2J")
-	for i, line := range lines {
-		if i >= height-1 {
-			break
+	// Draw the confirmation over the session view rather than burying the question
+	// in the status line. Keep it usable on narrow terminals too.
+	panelWidth := min(70, max(1, width-1))
+	panelLines := []string(nil)
+	if confirm != nil {
+		panelLines = []string{
+			"CONFIRM: " + confirm.title,
+			"Session: " + confirm.runID,
+			confirm.detail,
+			"Press Y to confirm · any other key cancels",
+		}
+	}
+	panelTop := max(0, (height-1-len(panelLines)-2)/2)
+	for i := 0; i < height-1 && (i < len(lines) || confirm != nil); i++ {
+		line := row{}
+		if i < len(lines) {
+			line = lines[i]
+		}
+		if confirm != nil && i >= panelTop && i < panelTop+len(panelLines)+2 {
+			text := strings.Repeat("─", panelWidth)
+			if i > panelTop && i < panelTop+len(panelLines)+1 {
+				text = terminalText(panelLines[i-panelTop-1], panelWidth)
+				text += strings.Repeat(" ", panelWidth-len([]rune(text)))
+			}
+			padding := strings.Repeat(" ", max(0, (width-1-panelWidth)/2))
+			display.WriteString("\x1b[1;37;44m" + padding + text + reset + "\r\n")
+			continue
 		}
 		display.WriteString(line.style)
 		display.WriteString(terminalText(line.text, max(1, width-1)))

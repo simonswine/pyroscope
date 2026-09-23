@@ -18,7 +18,7 @@ amd64 and uses systemd, not Docker or Kubernetes.
 | --- | --- |
 | `n` | New run: select benchmarks, Git refs, repetitions and benchtime |
 | `e` | Edit the selected draft |
-| `j` / `k` | Select a session |
+| `j` / `k`, ↓ / ↑ | Select a session |
 | `p` | Discover settings and prepare the selected draft (no AWS resource creation) |
 | `r` | Resume/reconcile the selected session, or attach to its remote worker |
 | `c` | Cancel/detach the current **local** operation |
@@ -28,7 +28,7 @@ amd64 and uses systemd, not Docker or Kubernetes.
 | `d` | Destroy the instance, security group, and imported key pair, after confirmation |
 | `q`, Ctrl-C | Quit, leaving remote work and AWS resources alone |
 
-Launching/provisioning requires confirmation with uppercase `Y`. Preparation
+Launch, stop, and destroy actions display a confirmation popup; press uppercase `Y` to proceed or another key to cancel. Preparation
 resolves the selected Git refs to immutable commits and builds in temporary detached
 worktrees. The controller, benchmark clients and integration harness come from the
 source checkout recorded when the session was created. Preparation does not launch
