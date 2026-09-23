@@ -108,6 +108,40 @@ func (t *testTransport) DialContext(ctx context.Context, network, addr string) (
 
 type ClusterOption func(c *Cluster)
 
+// WithTargets overrides the component topology. Apply it after WithV1 or WithV2.
+func WithTargets(targets ...string) ClusterOption {
+	return func(c *Cluster) { c.expectedComponents = append([]string(nil), targets...) }
+}
+
+// WithExtraFlags appends flags after the integration defaults on every component.
+// This allows callers to use external object storage without duplicating wiring.
+func WithExtraFlags(flags ...string) ClusterOption {
+	return func(c *Cluster) { c.extraFlags = append(c.extraFlags, flags...) }
+}
+
+// WithExternalMetastore connects a query-only V2 cluster to an existing metastore.
+func WithExternalMetastore(address string) ClusterOption {
+	return func(c *Cluster) { c.externalMetastore = address }
+}
+
+// MetastoreAddress returns the leader address used by V2 clients.
+func (c *Cluster) MetastoreAddress() string {
+	if c.externalMetastore != "" {
+		return c.externalMetastore
+	}
+	leader := c.metastoreExpectedLeader()
+	return fmt.Sprintf("%s:%d/%s", listenAddr, leader.grpcPort, leader.nodeName())
+}
+
+// WithDirectory reuses component data and port assignments across process restarts.
+// The caller must ensure only one cluster uses the directory at a time.
+func WithDirectory(path string) ClusterOption {
+	return func(c *Cluster) { c.persistentDir = path }
+}
+
+// Directory returns the data directory created or reused by Prepare.
+func (c *Cluster) Directory() string { return c.tmpDir }
+
 func NewMicroServiceCluster(opts ...ClusterOption) *Cluster {
 	c := &Cluster{}
 	WithV1()(c)
@@ -135,6 +169,9 @@ type Cluster struct {
 	v2                 bool     // is this a v2 cluster
 	debuginfodURL      string   // debuginfod URL for symbolization
 	expectedComponents []string // number of expected components
+	extraFlags         []string
+	externalMetastore  string
+	persistentDir      string
 
 	tmpDir     string
 	httpClient *http.Client
@@ -200,8 +237,11 @@ func (c *Cluster) dataDir(comp *Component) string {
 }
 
 func (c *Cluster) Prepare(ctx context.Context) (err error) {
-	// tmp dir
-	c.tmpDir, err = os.MkdirTemp("", "pyroscope-test")
+	if c.persistentDir == "" {
+		c.tmpDir, err = os.MkdirTemp("", "pyroscope-test")
+	} else {
+		c.tmpDir, err = filepath.Abs(c.persistentDir)
+	}
 	if err != nil {
 		return err
 	}
@@ -214,7 +254,7 @@ func (c *Cluster) Prepare(ctx context.Context) (err error) {
 	if c.v2 {
 		portsPerComponent = 4
 	}
-	ports, err := getFreeTCPPorts(listenAddr, len(c.Components)*portsPerComponent)
+	ports, err := c.componentPorts(portsPerComponent)
 	if err != nil {
 		return err
 	}
@@ -239,10 +279,27 @@ func (c *Cluster) Prepare(ctx context.Context) (err error) {
 	}
 
 	if c.v2 {
-		return c.v2Prepare(ctx, memberlistJoin)
+		if len(c.perTarget["metastore"]) == 0 && c.externalMetastore == "" {
+			return fmt.Errorf("V2 cluster requires at least one metastore")
+		}
+		if c.externalMetastore != "" {
+			for _, comp := range c.Components {
+				if comp.Target != "query-frontend" && comp.Target != "query-backend" {
+					return fmt.Errorf("external metastore requires a query-only cluster")
+				}
+			}
+		}
+		err = c.v2Prepare(ctx, memberlistJoin)
+	} else {
+		err = c.v1Prepare(ctx, memberlistJoin)
 	}
-
-	return c.v1Prepare(ctx, memberlistJoin)
+	if err != nil {
+		return err
+	}
+	for _, comp := range c.Components {
+		comp.flags = append(comp.flags, c.extraFlags...)
+	}
+	return nil
 }
 
 func (c *Cluster) Stop() func(context.Context) error {
@@ -267,6 +324,9 @@ func (c *Cluster) Start(ctx context.Context) (err error) {
 	notReady := make(map[*Component]error)
 
 	for _, comp := range c.Components {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		p, err := comp.start(ctx)
 		if err != nil {
 			return err
@@ -286,54 +346,49 @@ func (c *Cluster) Start(ctx context.Context) (err error) {
 
 	}
 
-	readyCh := make(chan struct{})
-	go func() {
-		rate := 200 * time.Millisecond
-		ticker := time.NewTicker(rate)
-		defer ticker.Stop()
-		for {
-			for t := range notReady {
-				if err := func() error {
-					ctx, cancel := context.WithTimeout(context.Background(), rate)
-					defer cancel()
+	rate := 200 * time.Millisecond
+	ticker := time.NewTicker(rate)
+	defer ticker.Stop()
+	for {
+		for t := range notReady {
+			if err := func() error {
+				ctx, cancel := context.WithTimeout(ctx, rate)
+				defer cancel()
 
-					var found bool
-					var err error
+				var found bool
+				var err error
 
-					if c.v2 {
-						found, err = c.v2ReadyCheckComponent(ctx, t)
-					} else {
-						found, err = c.v1ReadyCheckComponent(ctx, t)
-					}
-					if found {
-						if err != nil {
-							return err
-						}
-						return nil
-					}
-
-					// fallback to http ready check
-					return t.httpReadyCheck(ctx)
-				}(); err != nil {
-					notReady[t] = err
+				if c.v2 {
+					found, err = c.v2ReadyCheckComponent(ctx, t)
 				} else {
-					delete(notReady, t)
+					found, err = c.v1ReadyCheckComponent(ctx, t)
+				}
+				if found {
+					if err != nil {
+						return err
+					}
+					return nil
 				}
 
+				// fallback to http ready check
+				return t.httpReadyCheck(ctx)
+			}(); err != nil {
+				notReady[t] = err
+			} else {
+				delete(notReady, t)
 			}
 
-			if len(notReady) == 0 {
-				close(readyCh)
-				break
-			}
-
-			<-ticker.C
 		}
-	}()
 
-	<-readyCh
-
-	return nil
+		if len(notReady) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("cluster readiness: %w (pending: %v)", ctx.Err(), notReady)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *Cluster) Wait() {
