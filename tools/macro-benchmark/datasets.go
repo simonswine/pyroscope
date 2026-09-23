@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type datasetPreset struct {
 	URL       string `yaml:"url"`
 	SizeBytes int64  `yaml:"size_bytes"`
-	CRC32C    string `yaml:"crc32c"`
 }
 
 func (c *inputsConfig) resolveDataset() error {
@@ -26,7 +24,7 @@ func (c *inputsConfig) resolveDataset() error {
 	if !ok {
 		return fmt.Errorf("unknown dataset %q", c.Dataset)
 	}
-	c.FixtureURL, c.FixtureSizeBytes, c.FixtureCRC32C = preset.URL, preset.SizeBytes, preset.CRC32C
+	c.FixtureURL, c.FixtureSizeBytes = preset.URL, preset.SizeBytes
 	return nil
 }
 
@@ -65,21 +63,9 @@ func inspectFixture(ctx context.Context, cfg inputsConfig) (map[string]any, erro
 	if response.ContentLength != cfg.FixtureSizeBytes {
 		return nil, fmt.Errorf("fixture metadata size %d, expected %d", response.ContentLength, cfg.FixtureSizeBytes)
 	}
-	var crc string
-	for _, header := range response.Header.Values("X-Goog-Hash") {
-		for _, entry := range strings.Split(header, ",") {
-			key, value, ok := strings.Cut(strings.TrimSpace(entry), "=")
-			if ok && key == "crc32c" {
-				crc = value
-			}
-		}
-	}
-	if crc == "" || crc != cfg.FixtureCRC32C {
-		return nil, errors.New("fixture CRC32C metadata mismatch")
-	}
 	return map[string]any{
 		"dataset": cfg.Dataset, "url": cfg.FixtureURL, "generation": generation,
-		"size_bytes": response.ContentLength, "crc32c": crc,
+		"size_bytes": response.ContentLength,
 		"delivery": "direct-http-stream", "verification": "gcs-head-metadata",
 		"body_checksum_verified": false,
 	}, nil

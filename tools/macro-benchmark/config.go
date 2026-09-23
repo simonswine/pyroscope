@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +22,6 @@ type inputsConfig struct {
 	Dataset          string `yaml:"dataset,omitempty"`
 	FixtureURL       string `yaml:"fixture_url,omitempty"`
 	FixtureSizeBytes int64  `yaml:"fixture_size_bytes,omitempty"`
-	FixtureCRC32C    string `yaml:"fixture_crc32c,omitempty"`
 	ReplayTimeout    string `yaml:"replay_timeout"`
 	Fixture          string `yaml:"fixture,omitempty"`
 	FixtureSHA256    string `yaml:"fixture_sha256,omitempty"`
@@ -86,9 +84,8 @@ func (c inputsConfig) validate() error {
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 			return errors.New("fixture_url must use HTTPS without credentials")
 		}
-		crc, err := base64.StdEncoding.DecodeString(c.FixtureCRC32C)
-		if err != nil || len(crc) != 4 || c.FixtureSizeBytes <= 0 || c.FixtureSizeBytes > 1<<40 {
-			return errors.New("remote fixture requires size (up to 1 TiB) and base64 CRC32C")
+		if c.FixtureSizeBytes <= 0 || c.FixtureSizeBytes > 1<<40 {
+			return errors.New("remote fixture requires size (up to 1 TiB)")
 		}
 	}
 	if d, err := time.ParseDuration(c.ReplayTimeout); err != nil || d <= 0 {

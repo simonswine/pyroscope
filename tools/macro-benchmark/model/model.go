@@ -12,8 +12,7 @@ type ReplayArtifact struct {
 	Path string // Local recording, copied into the bundle.
 
 	SHA256    string // Optional for remote artifacts; required for local files.
-	SizeBytes int64  // Remote artifacts without SHA256 require size and CRC32C.
-	CRC32C    string // Base64-encoded CRC32C, as published by GCS.
+	SizeBytes int64  // Remote artifacts without SHA256 require size.
 }
 
 // TargetVersion identifies the Pyroscope revision/artifacts under test. Use an
