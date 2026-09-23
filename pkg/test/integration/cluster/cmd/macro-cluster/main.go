@@ -59,6 +59,9 @@ func run(ctx context.Context, output, mode, metastore, cpuProfile, memProfile, d
 		"-distributor.ingestion-burst-size-mb=1024",
 		// Public fixtures include series with more than the default 30 label names.
 		"-validation.max-label-names-per-series=128",
+		// Public fixtures include profiles exceeding the default sample/size limits.
+		"-validation.max-profile-stacktrace-samples=65536",
+		"-validation.max-profile-size-bytes=67108864", // 64 MiB
 		"-storage.backend=s3",
 		"-storage.s3.endpoint="+os.Getenv("MINIO_ENDPOINT"),
 		"-storage.s3.bucket-name="+os.Getenv("MINIO_BUCKET"),
