@@ -3,12 +3,12 @@ package main
 func defaultDatasets() map[string]datasetPreset {
 	return map[string]datasetPreset{
 		"full-tenant": {
-			URL:       "https://storage.googleapis.com/pyroscope-sample-data/3500-services-5min.replay.zst?generation=1790088792036149",
-			SizeBytes: 7171041968, CRC32C: "LejvQQ==",
+			URL:       "https://storage.googleapis.com/pyroscope-sample-data/3500-services-5min.replay.zst?generation=1790169551127284",
+			SizeBytes: 7171041968,
 		},
 		"high-volume-service": {
-			URL:       "https://storage.googleapis.com/pyroscope-sample-data/high-volume-service-2h.replay.zst?generation=1790088492848813",
-			SizeBytes: 19319571496, CRC32C: "29OTSg==",
+			URL:       "https://storage.googleapis.com/pyroscope-sample-data/high-volume-service-2h.replay.zst?generation=1790169097397925",
+			SizeBytes: 19319571496,
 		},
 	}
 }

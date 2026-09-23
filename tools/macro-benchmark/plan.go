@@ -26,7 +26,6 @@ type datasetReplay struct {
 	Path      string `yaml:"path,omitempty"`
 	SHA256    string `yaml:"sha256,omitempty"`
 	SizeBytes int64  `yaml:"size_bytes,omitempty"`
-	CRC32C    string `yaml:"crc32c,omitempty"`
 }
 
 type plannedBenchmark struct {
@@ -112,7 +111,7 @@ func (p runPlan) validate(c inputsConfig) error {
 		}
 		fixture := c
 		fixture.FixtureURL, fixture.Fixture, fixture.FixtureSHA256 = d.URL, d.Path, d.SHA256
-		fixture.FixtureSizeBytes, fixture.FixtureCRC32C = d.SizeBytes, d.CRC32C
+		fixture.FixtureSizeBytes = d.SizeBytes
 		if err := fixture.validate(); err != nil {
 			return err
 		}
@@ -166,9 +165,9 @@ func makeRunPlan(ctx context.Context, source string, c inputsConfig) (*runPlan, 
 		if _, err := rand.Read(suffix[:]); err != nil {
 			return nil, err
 		}
-		d := datasetReplay{Name: name, Tenant: name + "-" + hex.EncodeToString(suffix[:]), URL: preset.URL, SizeBytes: preset.SizeBytes, CRC32C: preset.CRC32C}
+		d := datasetReplay{Name: name, Tenant: name + "-" + hex.EncodeToString(suffix[:]), URL: preset.URL, SizeBytes: preset.SizeBytes}
 		if c.FixtureURL != "" {
-			d.URL, d.SizeBytes, d.CRC32C, d.SHA256 = c.FixtureURL, c.FixtureSizeBytes, c.FixtureCRC32C, c.FixtureSHA256
+			d.URL, d.SizeBytes, d.SHA256 = c.FixtureURL, c.FixtureSizeBytes, c.FixtureSHA256
 		}
 		if c.Fixture != "" {
 			d.URL, d.Path, d.SHA256 = "", "fixture.replay", c.FixtureSHA256
