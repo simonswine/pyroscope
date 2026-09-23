@@ -9,7 +9,7 @@ import (
 
 func TestBenchmarkNames(t *testing.T) {
 	seen := map[string]bool{}
-	for dataset, count := range map[string]int{"full-tenant": 6, "high-volume-service": 4} {
+	for dataset, count := range map[string]int{"full-tenant": 6, "high-volume-service": 4, "checkout-service": 1} {
 		names := benchmarkNames(dataset)
 		if len(names) != count {
 			t.Fatalf("%s: expected %d benchmarks, got %v", dataset, count, names)

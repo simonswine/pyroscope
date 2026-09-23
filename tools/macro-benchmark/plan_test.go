@@ -29,7 +29,7 @@ func TestRunPlanDefaultAndOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Benchmarks) != 10 || len(plan.Datasets) != 2 {
+	if len(plan.Benchmarks) != 11 || len(plan.Datasets) != 3 {
 		t.Fatalf("unexpected default plan: %+v", plan)
 	}
 	if plan.Ingest != plan.Comparison || plan.Baseline.Commit == plan.Comparison.Commit {
