@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,6 +34,80 @@ import (
 // stuck between "starting replay cycle" and "replay cycle complete".
 const progressLogInterval = 5 * time.Second
 
+// replayPushPool manages a fixed number of goroutines that drain a batch
+// channel and call pushBatch concurrently. The scheduler goroutine submits
+// batches via submit(); the channel acts as a semaphore so the scheduler
+// naturally stalls when all workers are busy. Call wait() once all batches
+// have been submitted: it closes the channel, waits for every worker to
+// finish, and returns the aggregate pushed/failed counts.
+//
+// Context cancellation is handled cleanly: submit() selects on ctx.Done() so
+// the scheduler is never stuck, and workers that fail solely because the
+// context was cancelled do not increment the failed counter.
+type replayPushPool struct {
+	ctx    context.Context
+	ch     chan []*pushv1.RawProfileSeries
+	wg     sync.WaitGroup
+	pushed atomic.Int64
+	failed atomic.Int64
+}
+
+func newReplayPushPool(ctx context.Context, pc pushv1connect.PusherServiceClient, workers int) *replayPushPool {
+	p := &replayPushPool{
+		ctx: ctx,
+		ch:  make(chan []*pushv1.RawProfileSeries, workers),
+	}
+	for range workers {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for batch := range p.ch {
+				if err := pushBatch(ctx, pc, batch); err != nil {
+					// Don't count failures that are purely due to context
+					// cancellation; those are expected during a clean shutdown.
+					if ctx.Err() != nil {
+						return
+					}
+					p.failed.Add(int64(len(batch)))
+					level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", err)
+				} else {
+					p.pushed.Add(int64(len(batch)))
+					level.Debug(logger).Log("msg", "pushed replayed profile batch", "batch_size", len(batch))
+				}
+			}
+		}()
+	}
+	return p
+}
+
+// submit enqueues a batch for a worker. It returns false (without blocking)
+// if the context is cancelled, so the scheduler is never stuck when shutting
+// down even if all workers are temporarily busy.
+func (p *replayPushPool) submit(batch []*pushv1.RawProfileSeries) bool {
+	select {
+	case p.ch <- batch:
+		return true
+	case <-p.ctx.Done():
+		return false
+	}
+}
+
+func (p *replayPushPool) wait() (pushed, failed int) {
+	close(p.ch)
+	p.wg.Wait()
+	return int(p.pushed.Load()), int(p.failed.Load())
+}
+
+// effectiveWorkers returns n, clamped to a minimum of 1. A configured value
+// of 0 (the zero value, used in tests) is treated as 1 to keep tests
+// deterministic without requiring callers to set an explicit default.
+func effectiveWorkers(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	return n
+}
+
 type replayPushParams struct {
 	*phlareClient
 
@@ -39,6 +116,7 @@ type replayPushParams struct {
 	Speed          float64
 	BatchSize      int
 	BatchWait      time.Duration
+	Workers        int
 	ExpectedSHA256 string
 }
 
@@ -51,6 +129,7 @@ func addReplayPushParams(cmd commander) *replayPushParams {
 	cmd.Flag("speed", "Time-scale multiplier for replay speed (2 replays twice as fast, 0.5 half as fast).").Default("1").Float64Var(&params.Speed)
 	cmd.Flag("batch-size", "Maximum number of profiles to send in a single push request.").Default("100").IntVar(&params.BatchSize)
 	cmd.Flag("batch-wait", "Maximum time to accumulate a batch before flushing it, once the first profile in the batch becomes due.").Default("500ms").DurationVar(&params.BatchWait)
+	cmd.Flag("workers", "Number of concurrent push workers. Each worker sends one batch at a time; increasing this hides network round-trip latency.").Default(fmt.Sprintf("%d", runtime.GOMAXPROCS(0))).IntVar(&params.Workers)
 	cmd.Flag("sha256", "Expected SHA-256 hex digest of the raw (compressed) input file. If set, the digest is verified after each read pass; an error is returned on mismatch. When omitted the computed digest is still logged.").StringVar(&params.ExpectedSHA256)
 	return params
 }
@@ -292,24 +371,34 @@ func runReplayReaderCycle(
 	cycleStart time.Time,
 	params *replayPushParams,
 ) (pushed, failed int, interrupted bool, err error) {
+	pool := newReplayPushPool(ctx, pc, effectiveWorkers(params.Workers))
+	defer func() {
+		p, f := pool.wait()
+		pushed += p
+		failed += f
+	}()
+
 	scheduledTarget := func(rec replayRecord) time.Time {
 		return cycleStart.Add(time.Duration(float64(rec.TimestampNanos-first.TimestampNanos) / params.Speed))
 	}
 	current := first
+	var buildFailed int
 	lastProgressLog := time.Now()
 	for {
 		if ctx.Err() != nil {
-			return pushed, failed, true, nil
+			interrupted = true
+			return
 		}
 		firstTarget := scheduledTarget(current)
 		if !waitUntil(ctx, firstTarget) {
-			return pushed, failed, true, nil
+			interrupted = true
+			return
 		}
 		batch := make([]*pushv1.RawProfileSeries, 0, params.BatchSize)
 		for {
 			series, buildErr := buildSeries(current, scheduledTarget(current))
 			if buildErr != nil {
-				failed++
+				buildFailed++
 				level.Error(logger).Log("msg", "failed to prepare replayed profile", "err", buildErr)
 			} else {
 				batch = append(batch, series)
@@ -317,39 +406,33 @@ func runReplayReaderCycle(
 
 			next, readErr := rr.ReadRecord()
 			if errors.Is(readErr, io.EOF) {
-				current = replayRecord{}
 				if len(batch) > 0 {
-					if pushErr := pushBatch(ctx, pc, batch); pushErr != nil {
-						failed += len(batch)
-						level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", pushErr)
-					} else {
-						pushed += len(batch)
-					}
+					pool.submit(batch)
 				}
-				return pushed, failed, false, nil
+				failed += buildFailed
+				return
 			}
 			if readErr != nil {
-				return pushed, failed, false, fmt.Errorf("failed to read replay record: %w", readErr)
+				failed += buildFailed
+				err = fmt.Errorf("failed to read replay record: %w", readErr)
+				return
 			}
 			if len(batch) == params.BatchSize || scheduledTarget(next).After(firstTarget.Add(params.BatchWait)) {
 				if len(batch) > 0 {
-					if pushErr := pushBatch(ctx, pc, batch); pushErr != nil {
-						failed += len(batch)
-						level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", pushErr)
-					} else {
-						pushed += len(batch)
-					}
+					pool.submit(batch)
 				}
 				current = next
 				break
 			}
 			if !waitUntil(ctx, scheduledTarget(next)) {
-				return pushed, failed, true, nil
+				interrupted = true
+				failed += buildFailed
+				return
 			}
 			current = next
 		}
 		if time.Since(lastProgressLog) >= progressLogInterval {
-			level.Info(logger).Log("msg", "replay progress", "pushed", pushed, "failed", failed)
+			level.Info(logger).Log("msg", "replay progress", "pushed", pool.pushed.Load(), "failed", pool.failed.Load()+int64(buildFailed))
 			lastProgressLog = time.Now()
 		}
 	}
@@ -402,6 +485,13 @@ func runReplayCycleWithWait(
 	params *replayPushParams,
 	wait replayWaitFunc,
 ) (pushed, failed int, interrupted bool) {
+	pool := newReplayPushPool(ctx, pc, effectiveWorkers(params.Workers))
+	defer func() {
+		p, f := pool.wait()
+		pushed += p
+		failed += f
+	}()
+
 	scheduledTarget := func(rec replayRecord) time.Time {
 		offset := time.Duration(float64(rec.TimestampNanos-minTs) / params.Speed)
 		return cycleStart.Add(offset)
@@ -409,6 +499,7 @@ func runReplayCycleWithWait(
 
 	lastProgressLog := time.Now()
 	total := len(records)
+	var buildFailed int
 
 	i := 0
 	for i < total {
@@ -427,7 +518,7 @@ func runReplayCycleWithWait(
 		batch := make([]*pushv1.RawProfileSeries, 0, params.BatchSize)
 		series, err := buildSeries(first, firstTarget)
 		if err != nil {
-			failed++
+			buildFailed++
 			level.Error(logger).Log("msg", "failed to prepare replayed profile", "err", err)
 		} else {
 			batch = append(batch, series)
@@ -446,7 +537,7 @@ func runReplayCycleWithWait(
 				break
 			}
 			if series, err := buildSeries(next, nextTarget); err != nil {
-				failed++
+				buildFailed++
 				level.Error(logger).Log("msg", "failed to prepare replayed profile", "err", err)
 			} else {
 				batch = append(batch, series)
@@ -455,13 +546,7 @@ func runReplayCycleWithWait(
 		}
 
 		if len(batch) > 0 {
-			if err := pushBatch(ctx, pc, batch); err != nil {
-				failed += len(batch)
-				level.Error(logger).Log("msg", "failed to push replayed profile batch", "batch_size", len(batch), "err", err)
-			} else {
-				pushed += len(batch)
-				level.Debug(logger).Log("msg", "pushed replayed profile batch", "batch_size", len(batch))
-			}
+			pool.submit(batch)
 		}
 
 		if interrupted {
@@ -469,12 +554,12 @@ func runReplayCycleWithWait(
 		}
 
 		if now := time.Now(); now.Sub(lastProgressLog) >= progressLogInterval {
-			level.Info(logger).Log("msg", "replay progress", "pushed", pushed, "failed", failed, "total", total)
+			level.Info(logger).Log("msg", "replay progress", "pushed", pool.pushed.Load(), "failed", pool.failed.Load()+int64(buildFailed), "total", total)
 			lastProgressLog = now
 		}
 	}
-
-	return pushed, failed, interrupted
+	failed += buildFailed
+	return
 }
 
 // waitUntil blocks until target, or returns false immediately if ctx is
