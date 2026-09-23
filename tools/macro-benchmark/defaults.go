@@ -10,10 +10,6 @@ func defaultDatasets() map[string]datasetPreset {
 			URL:       "https://storage.googleapis.com/pyroscope-sample-data/high-volume-service-2h.replay.zst?generation=1790088492848813",
 			SizeBytes: 19319571496, CRC32C: "29OTSg==",
 		},
-		"checkoutservice": {
-			URL:       "https://storage.googleapis.com/pyroscope-sample-data/checkoutservice-1-hour.replay?generation=1784809765684326",
-			SizeBytes: 29880411, CRC32C: "qwpAbQ==",
-		},
 	}
 }
 

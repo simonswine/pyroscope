@@ -16,7 +16,7 @@ import (
 )
 
 func replayPushArgs(input, endpoint, tenant string) []string {
-	return []string{"replay", "push", "--input=" + input, "--no-loop", "--url=" + endpoint, "--tenant-id=" + tenant}
+	return []string{"replay", "push", "--input=" + input, "--no-loop", "--url=" + endpoint, "--tenant-id=" + tenant, "--speed=120", "--batch-wait=1ms"}
 }
 
 // Exercise the actual CLI parser before downloading a large fixture. Reaching

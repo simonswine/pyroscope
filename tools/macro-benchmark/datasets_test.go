@@ -10,7 +10,7 @@ import (
 )
 
 func TestDatasetPresets(t *testing.T) {
-	for _, name := range []string{"full-tenant", "high-volume-service", "checkoutservice"} {
+	for _, name := range []string{"full-tenant", "high-volume-service"} {
 		cfg := inputsConfig{Dataset: name}
 		if err := cfg.resolveDataset(); err != nil {
 			t.Fatal(err)
