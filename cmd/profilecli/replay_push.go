@@ -181,16 +181,13 @@ func openReplayInput(ctx context.Context, input string) (*rawHashReadCloser, err
 // decompression on top. The hasher sees every raw byte read from the source.
 func newRawHashReadCloser(raw io.ReadCloser) *rawHashReadCloser {
 	h := sha256.New()
-	tee := io.TeeReader(raw, h) // hash raw bytes transparently
+	tee := io.TeeReader(raw, h)                 // hash raw bytes transparently
 	dec := replayInputReader(io.NopCloser(tee)) // zstd-detect on the tee
 	rc := &rawHashReadCloser{}
 	rc.ReadCloser = replayInputReadCloser{
 		Reader: dec,
 		close: func() error {
 			err := dec.Close()
-			// Drain any buffered but unread bytes so the hasher sees the full
-			// raw stream even when the caller stops reading early.
-			_, _ = io.Copy(io.Discard, tee)
 			rc.hexSum = hex.EncodeToString(h.Sum(nil))
 			rawErr := raw.Close()
 			if err == nil {
@@ -269,20 +266,13 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 	if err != nil {
 		return err
 	}
-	_, err = rr.ReadRecord()
-	closeErr := input.Close()
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if closeErr != nil {
-		return fmt.Errorf("failed to close replay dump input: %w", closeErr)
-	}
-	if errors.Is(err, io.EOF) {
-		return errors.New("replay dump file contains no profiles")
-	}
-	if err := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); err != nil {
-		return err
-	}
+	// Keep this reader for the first cycle; probing must not consume the
+	// entire input before streaming can begin.
+	defer func() {
+		if input != nil {
+			_ = input.Close()
+		}
+	}()
 	header := rr.Header
 	if len(header.Tenants) > 1 {
 		return fmt.Errorf("replay dump file contains %d tenants (%s); only single-tenant dumps are supported", len(header.Tenants), strings.Join(header.Tenants, ", "))
@@ -308,9 +298,11 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 		cycleStart := startWall.Add(cycleOffset)
 		level.Info(logger).Log("msg", "starting replay cycle", "cycle", cycle, "scheduled_start", cycleStart)
 
-		rr, input, err := openReplayReader(ctx, params.Input)
-		if err != nil {
-			return err
+		if cycle > 0 {
+			rr, input, err = openReplayReader(ctx, params.Input)
+			if err != nil {
+				return err
+			}
 		}
 		var pushed, failed int
 		var interrupted bool
@@ -319,7 +311,9 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 			// v2+: records are guaranteed timestamp-ordered; stream them.
 			first, readErr := rr.ReadRecord()
 			if readErr != nil {
-				_ = input.Close()
+				if errors.Is(readErr, io.EOF) {
+					return errors.New("replay dump file contains no profiles")
+				}
 				return fmt.Errorf("failed to read first replay record: %w", readErr)
 			}
 			pushed, failed, interrupted, runErr = runReplayReaderCycle(ctx, pc, rr, first, cycleStart, params)
@@ -328,24 +322,28 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 			level.Info(logger).Log("msg", "v1 replay dump: buffering and sorting all records by timestamp", "cycle", cycle)
 			records, minTs, loadErr := loadAndSortRecords(rr)
 			if loadErr != nil {
-				_ = input.Close()
 				return fmt.Errorf("failed to load replay records: %w", loadErr)
+			}
+			if len(records) == 0 {
+				return errors.New("replay dump file contains no profiles")
 			}
 			pushed, failed, interrupted = runReplayCycle(ctx, pc, records, minTs, cycleStart, params)
 		}
 		closeErr := input.Close()
+		digest := input.HexSum()
+		input = nil
 		if runErr != nil {
 			return runErr
 		}
 		if closeErr != nil {
 			return fmt.Errorf("failed to close replay dump input: %w", closeErr)
 		}
-		if shaErr := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); shaErr != nil {
-			return shaErr
-		}
-		if interrupted {
+		if interrupted || ctx.Err() != nil {
 			level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
 			return nil
+		}
+		if shaErr := checkReplaySHA256(params.Input, digest, params.ExpectedSHA256); shaErr != nil {
+			return shaErr
 		}
 		level.Info(logger).Log("msg", "replay cycle complete", "cycle", cycle, "pushed", pushed, "failed", failed)
 		if !params.Loop {
