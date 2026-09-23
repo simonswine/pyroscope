@@ -57,6 +57,8 @@ func run(ctx context.Context, output, mode, metastore, cpuProfile, memProfile, d
 		// Public macro fixtures exceed the normal 4 MiB/s tenant ingestion limit.
 		"-distributor.ingestion-rate-limit-mb=1024",
 		"-distributor.ingestion-burst-size-mb=1024",
+		// Public fixtures include series with more than the default 30 label names.
+		"-validation.max-label-names-per-series=128",
 		"-storage.backend=s3",
 		"-storage.s3.endpoint="+os.Getenv("MINIO_ENDPOINT"),
 		"-storage.s3.bucket-name="+os.Getenv("MINIO_BUCKET"),
