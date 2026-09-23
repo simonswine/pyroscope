@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -232,28 +233,42 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 		if err != nil {
 			return err
 		}
-		first, err := rr.ReadRecord()
-		if err == nil {
-			pushed, failed, interrupted, runErr := runReplayReaderCycle(ctx, pc, rr, first, cycleStart, params)
-			closeErr := input.Close()
-			if runErr != nil {
-				return runErr
+		var pushed, failed int
+		var interrupted bool
+		var runErr error
+		if header.Version >= replayFormatVersion {
+			// v2+: records are guaranteed timestamp-ordered; stream them.
+			first, readErr := rr.ReadRecord()
+			if readErr != nil {
+				_ = input.Close()
+				return fmt.Errorf("failed to read first replay record: %w", readErr)
 			}
-			if closeErr != nil {
-				return fmt.Errorf("failed to close replay dump input: %w", closeErr)
-			}
-			if shaErr := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); shaErr != nil {
-				return shaErr
-			}
-			if interrupted {
-				level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
-				return nil
-			}
-			level.Info(logger).Log("msg", "replay cycle complete", "cycle", cycle, "pushed", pushed, "failed", failed)
+			pushed, failed, interrupted, runErr = runReplayReaderCycle(ctx, pc, rr, first, cycleStart, params)
 		} else {
-			_ = input.Close()
-			return fmt.Errorf("failed to read first replay record: %w", err)
+			// v1: ordering is not guaranteed; read all records and sort before replaying.
+			level.Info(logger).Log("msg", "v1 replay dump: buffering and sorting all records by timestamp", "cycle", cycle)
+			records, minTs, loadErr := loadAndSortRecords(rr)
+			if loadErr != nil {
+				_ = input.Close()
+				return fmt.Errorf("failed to load replay records: %w", loadErr)
+			}
+			pushed, failed, interrupted = runReplayCycle(ctx, pc, records, minTs, cycleStart, params)
 		}
+		closeErr := input.Close()
+		if runErr != nil {
+			return runErr
+		}
+		if closeErr != nil {
+			return fmt.Errorf("failed to close replay dump input: %w", closeErr)
+		}
+		if shaErr := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); shaErr != nil {
+			return shaErr
+		}
+		if interrupted {
+			level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
+			return nil
+		}
+		level.Info(logger).Log("msg", "replay cycle complete", "cycle", cycle, "pushed", pushed, "failed", failed)
 		if !params.Loop {
 			break
 		}
@@ -281,7 +296,6 @@ func runReplayReaderCycle(
 		return cycleStart.Add(time.Duration(float64(rec.TimestampNanos-first.TimestampNanos) / params.Speed))
 	}
 	current := first
-	lastTimestamp := first.TimestampNanos
 	lastProgressLog := time.Now()
 	for {
 		if ctx.Err() != nil {
@@ -317,10 +331,6 @@ func runReplayReaderCycle(
 			if readErr != nil {
 				return pushed, failed, false, fmt.Errorf("failed to read replay record: %w", readErr)
 			}
-			if next.TimestampNanos < lastTimestamp {
-				return pushed, failed, false, errors.New("replay dump records are not timestamp ordered")
-			}
-			lastTimestamp = next.TimestampNanos
 			if len(batch) == params.BatchSize || scheduledTarget(next).After(firstTarget.Add(params.BatchWait)) {
 				if len(batch) > 0 {
 					if pushErr := pushBatch(ctx, pc, batch); pushErr != nil {
@@ -343,6 +353,31 @@ func runReplayReaderCycle(
 			lastProgressLog = time.Now()
 		}
 	}
+}
+
+// loadAndSortRecords reads all records from rr into memory and sorts them by
+// ascending timestamp. It is used for v1 dump files where ordering is not
+// guaranteed. Returns the sorted slice and the minimum timestamp.
+func loadAndSortRecords(rr *replayReader) ([]replayRecord, int64, error) {
+	var records []replayRecord
+	for {
+		rec, err := rr.ReadRecord()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		records = append(records, rec)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].TimestampNanos < records[j].TimestampNanos
+	})
+	var minTs int64
+	if len(records) > 0 {
+		minTs = records[0].TimestampNanos
+	}
+	return records, minTs, nil
 }
 
 func runReplayCycle(
