@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -31,11 +33,12 @@ const progressLogInterval = 5 * time.Second
 type replayPushParams struct {
 	*phlareClient
 
-	Input     string
-	Loop      bool
-	Speed     float64
-	BatchSize int
-	BatchWait time.Duration
+	Input          string
+	Loop           bool
+	Speed          float64
+	BatchSize      int
+	BatchWait      time.Duration
+	ExpectedSHA256 string
 }
 
 func addReplayPushParams(cmd commander) *replayPushParams {
@@ -47,13 +50,29 @@ func addReplayPushParams(cmd commander) *replayPushParams {
 	cmd.Flag("speed", "Time-scale multiplier for replay speed (2 replays twice as fast, 0.5 half as fast).").Default("1").Float64Var(&params.Speed)
 	cmd.Flag("batch-size", "Maximum number of profiles to send in a single push request.").Default("100").IntVar(&params.BatchSize)
 	cmd.Flag("batch-wait", "Maximum time to accumulate a batch before flushing it, once the first profile in the batch becomes due.").Default("500ms").DurationVar(&params.BatchWait)
+	cmd.Flag("sha256", "Expected SHA-256 hex digest of the raw (compressed) input file. If set, the digest is verified after each read pass; an error is returned on mismatch. When omitted the computed digest is still logged.").StringVar(&params.ExpectedSHA256)
 	return params
 }
+
+// rawHashReadCloser wraps a decompressed replay reader and tracks the SHA-256
+// of the underlying raw (possibly compressed) bytes as they are consumed.
+// Call HexSum() after the reader is fully drained and closed to obtain the
+// digest.
+type rawHashReadCloser struct {
+	io.ReadCloser
+	hexSum string
+}
+
+// HexSum returns the hex-encoded SHA-256 digest of the raw bytes consumed.
+// It is only valid after the reader has been fully read and closed.
+func (r *rawHashReadCloser) HexSum() string { return r.hexSum }
 
 // openReplayInput opens a local file or HTTP(S) URL and detects an optional
 // outer Zstandard stream from its first four bytes. The returned reader always
 // yields the replay format itself, not its optional transport compression.
-func openReplayInput(ctx context.Context, input string) (io.ReadCloser, error) {
+// The raw (pre-decompression) bytes are hashed with SHA-256 as they are read;
+// the digest is available via HexSum() after the reader is closed.
+func openReplayInput(ctx context.Context, input string) (*rawHashReadCloser, error) {
 	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, input, nil)
 		if err != nil {
@@ -68,14 +87,39 @@ func openReplayInput(ctx context.Context, input string) (io.ReadCloser, error) {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("failed to fetch replay dump file: unexpected status %s: %s", resp.Status, string(body))
 		}
-		return replayInputReader(resp.Body), nil
+		return newRawHashReadCloser(resp.Body), nil
 	}
 
 	f, err := os.Open(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open replay dump file: %w", err)
 	}
-	return replayInputReader(f), nil
+	return newRawHashReadCloser(f), nil
+}
+
+// newRawHashReadCloser wraps raw in a SHA-256 tee, then layers optional zstd
+// decompression on top. The hasher sees every raw byte read from the source.
+func newRawHashReadCloser(raw io.ReadCloser) *rawHashReadCloser {
+	h := sha256.New()
+	tee := io.TeeReader(raw, h) // hash raw bytes transparently
+	dec := replayInputReader(io.NopCloser(tee)) // zstd-detect on the tee
+	rc := &rawHashReadCloser{}
+	rc.ReadCloser = replayInputReadCloser{
+		Reader: dec,
+		close: func() error {
+			err := dec.Close()
+			// Drain any buffered but unread bytes so the hasher sees the full
+			// raw stream even when the caller stops reading early.
+			_, _ = io.Copy(io.Discard, tee)
+			rc.hexSum = hex.EncodeToString(h.Sum(nil))
+			rawErr := raw.Close()
+			if err == nil {
+				err = rawErr
+			}
+			return err
+		},
+	}
+	return rc
 }
 
 var replayZstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
@@ -102,7 +146,7 @@ func replayInputReader(r io.ReadCloser) io.ReadCloser {
 	return replayInputReadCloser{Reader: br, close: r.Close}
 }
 
-func openReplayReader(ctx context.Context, input string) (*replayReader, io.ReadCloser, error) {
+func openReplayReader(ctx context.Context, input string) (*replayReader, *rawHashReadCloser, error) {
 	r, err := openReplayInput(ctx, input)
 	if err != nil {
 		return nil, nil, err
@@ -129,6 +173,17 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if params.ExpectedSHA256 != "" {
+		norm := strings.ToLower(strings.TrimSpace(params.ExpectedSHA256))
+		if len(norm) != 64 {
+			return fmt.Errorf("--sha256: expected a 64-character hex string, got %d characters", len(norm))
+		}
+		if _, err := hex.DecodeString(norm); err != nil {
+			return fmt.Errorf("--sha256: not valid hex: %w", err)
+		}
+		params.ExpectedSHA256 = norm
+	}
+
 	level.Info(logger).Log("msg", "opening replay dump file", "input", params.Input)
 	rr, input, err := openReplayReader(ctx, params.Input)
 	if err != nil {
@@ -144,6 +199,9 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 	}
 	if errors.Is(err, io.EOF) {
 		return errors.New("replay dump file contains no profiles")
+	}
+	if err := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); err != nil {
+		return err
 	}
 	header := rr.Header
 	if len(header.Tenants) > 1 {
@@ -183,6 +241,9 @@ func replayPush(ctx context.Context, params *replayPushParams) error {
 			}
 			if closeErr != nil {
 				return fmt.Errorf("failed to close replay dump input: %w", closeErr)
+			}
+			if shaErr := checkReplaySHA256(params.Input, input.HexSum(), params.ExpectedSHA256); shaErr != nil {
+				return shaErr
 			}
 			if interrupted {
 				level.Info(logger).Log("msg", "replay interrupted", "cycle", cycle, "pushed", pushed, "failed", failed)
@@ -396,6 +457,20 @@ func waitUntil(ctx context.Context, target time.Time) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// checkReplaySHA256 logs the computed SHA-256 digest of the raw input bytes
+// and, when expected is non-empty, returns an error if the digests do not match.
+func checkReplaySHA256(input, computed, expected string) error {
+	if expected == "" {
+		level.Info(logger).Log("msg", "replay input sha256", "input", input, "sha256", computed)
+		return nil
+	}
+	if computed != expected {
+		return fmt.Errorf("sha256 mismatch for %s: expected %s, got %s", input, expected, computed)
+	}
+	level.Info(logger).Log("msg", "replay input sha256 verified", "input", input, "sha256", computed)
+	return nil
 }
 
 // buildSeries reconstructs the pprof profile with its timestamp rewritten to
