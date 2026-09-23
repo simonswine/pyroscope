@@ -142,7 +142,7 @@ func execute(ctx context.Context) (runErr error) {
 	}
 	clusterEnv := []string{"MINIO_ENDPOINT=127.0.0.1:9000", "MINIO_BUCKET=" + bucket, "MINIO_ROOT_USER=" + access, "MINIO_ROOT_PASSWORD=" + secret, "TMPDIR=" + filepath.Join(dataRoot, "cluster")}
 	log.Print("starting ingest cluster on CPUs 4-6")
-	cluster, err = startProcess("taskset", []string{"-c", "4-6", filepath.Join(remoteBundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + ingestDataDir, "-endpoints", filepath.Join(remoteBundle, "endpoints.yaml")},
+	cluster, err = startProcess("taskset", []string{"-c", "4-6", filepath.Join(remoteBundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + ingestDataDir, "-endpoints", filepath.Join(remoteBundle, "endpoints.yaml"), "-validation.max-label-names-per-series=128"},
 		append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(remoteResults, "cluster-ingest.log"))
 	if err != nil {
 		return err
