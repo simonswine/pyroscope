@@ -28,7 +28,7 @@ func TestTUIConfirmationPopup(t *testing.T) {
 	confirm := &tuiConfirmation{action: 'd', runID: "test-run", title: "DESTROY INSTANCE", detail: "Instance data will be lost."}
 	for _, size := range []struct{ width, height int }{{100, 30}, {30, 14}} {
 		display := tuiDisplayWithConfirmation(size.width, size.height, "/state", nil, 0, "Ready", false, confirm)
-		for _, want := range []string{"CONFIRM: DESTROY", "test-run", "Press Y to confirm", "\x1b[1;37;44m"} {
+		for _, want := range []string{"CONFIRM: DESTROY", "test-run", "Press Y to confirm", "\x1b[48;5;235m"} {
 			if !strings.Contains(display, want) {
 				t.Errorf("%dx%d: missing %q", size.width, size.height, want)
 			}

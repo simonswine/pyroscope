@@ -320,6 +320,38 @@ func interactiveSSH(ctx context.Context, tty *os.File, previous *term.State, sta
 	return cmd.Run()
 }
 
+// timeAgo returns a human-readable relative time string, e.g. "3 min ago".
+func timeAgo(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < 2*time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 h ago"
+		}
+		return fmt.Sprintf("%d h ago", h)
+	case d < 7*24*time.Hour:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	default:
+		weeks := int(d.Hours() / 24 / 7)
+		if weeks == 1 {
+			return "1 week ago"
+		}
+		return fmt.Sprintf("%d weeks ago", weeks)
+	}
+}
+
 func terminalSize(out *os.File) (int, int) {
 	width, height, err := term.GetSize(int(out.Fd()))
 	if err != nil || width < 1 || height < 1 {
@@ -368,7 +400,11 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 			mark, style = "› ", "\x1b[1;30;46m"
 		}
 		benchmarks, _ := selectedBenchmarks(state.Config.Inputs)
-		add(fmt.Sprintf("%s%-13s %s  /  %d benchmarks", mark, state.Phase, state.Config.RunID, len(benchmarks)), style)
+		ago := timeAgo(state.UpdatedAt)
+		if ago != "" {
+			ago = "  " + ago
+		}
+		add(fmt.Sprintf("%s%-13s %s  /  %d benchmarks%s", mark, state.Phase, state.Config.RunID, len(benchmarks), ago), style)
 	}
 	if len(states) == 0 {
 		add(" No sessions yet. Press n to select benchmarks and Git refs.", dim)
@@ -425,13 +461,30 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 			line = lines[i]
 		}
 		if confirm != nil && i >= panelTop && i < panelTop+len(panelLines)+2 {
-			text := strings.Repeat("─", panelWidth)
-			if i > panelTop && i < panelTop+len(panelLines)+1 {
-				text = terminalText(panelLines[i-panelTop-1], panelWidth)
-				text += strings.Repeat(" ", panelWidth-len([]rune(text)))
-			}
+			const (
+				popupBg    = "\x1b[48;5;235m" // dark grey background
+				popupFg    = "\x1b[38;5;255m" // near-white text
+				popupBold  = "\x1b[1m"
+				popupBorder = "\x1b[38;5;214m" // amber border
+			)
 			padding := strings.Repeat(" ", max(0, (width-1-panelWidth)/2))
-			display.WriteString("\x1b[1;37;44m" + padding + text + reset + "\r\n")
+			var text, cellStyle string
+			if i == panelTop || i == panelTop+len(panelLines)+1 {
+				// Border rows
+				text = strings.Repeat("─", panelWidth)
+				cellStyle = popupBg + popupBorder
+			} else {
+				// Content rows – first row is the title, rest are plain
+				raw := panelLines[i-panelTop-1]
+				text = terminalText(" "+raw, panelWidth)
+				text += strings.Repeat(" ", max(0, panelWidth-len([]rune(text))))
+				if i == panelTop+1 {
+					cellStyle = popupBg + popupBold + popupFg
+				} else {
+					cellStyle = popupBg + popupFg
+				}
+			}
+			display.WriteString(cellStyle + padding + text + reset + "\r\n")
 			continue
 		}
 		display.WriteString(line.style)
