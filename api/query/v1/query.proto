@@ -43,6 +43,9 @@ message InvokeOptions {
   // be listed in the request explicitly.
   bool sanitize_on_merge = 1;
   bool collect_diagnostics = 2;
+  // Run final report processing after this invocation completes. Set only for
+  // the root invocation; child invocations must clear this flag.
+  bool finalize = 3;
 }
 
 message InvokeRequest {
@@ -88,6 +91,7 @@ message Query {
   PprofQuery pprof = 7;
   HeatmapQuery heatmap = 8;
   TimeSeriesQuery time_series_compact = 9;
+  TimeSeriesAnalysisQuery time_series_analysis = 10;
   // function_details
   // call_graph
   // top_table
@@ -104,6 +108,7 @@ enum QueryType {
   QUERY_PPROF = 6;
   QUERY_HEATMAP = 7;
   QUERY_TIME_SERIES_COMPACT = 8;
+  QUERY_TIME_SERIES_ANALYSIS = 9;
 }
 
 message InvokeResponse {
@@ -163,6 +168,7 @@ message Report {
   PprofReport pprof = 7;
   HeatmapReport heatmap = 8;
   TimeSeriesCompactReport time_series_compact = 9;
+  TimeSeriesAnalysisReport time_series_analysis = 10;
 }
 
 enum ReportType {
@@ -175,6 +181,7 @@ enum ReportType {
   REPORT_PPROF = 6;
   REPORT_HEATMAP = 7;
   REPORT_TIME_SERIES_COMPACT = 8;
+  REPORT_TIME_SERIES_ANALYSIS = 9;
 }
 
 message LabelNamesQuery {}
@@ -212,6 +219,21 @@ message TimeSeriesQuery {
 message TimeSeriesReport {
   TimeSeriesQuery query = 1;
   repeated types.v1.Series time_series = 2;
+}
+
+message TimeSeriesAnalysisQuery {
+  double step = 1;
+  repeated string group_by = 2;
+  int64 limit = 3;
+  querier.v1.TimeSeriesAnalysisConfig config = 4;
+}
+
+message TimeSeriesAnalysisReport {
+  TimeSeriesAnalysisQuery query = 1;
+  // Intermediate series retained so parent query-plan nodes can merge and
+  // analyze the complete series.
+  repeated types.v1.Series time_series = 2;
+  repeated querier.v1.TimeSeriesEvent events = 3;
 }
 
 message TreeQuery {

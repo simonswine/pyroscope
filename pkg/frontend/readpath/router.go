@@ -2,6 +2,7 @@ package readpath
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"connectrpc.com/connect"
@@ -193,4 +194,38 @@ func query[Req, Resp any](
 	}
 
 	return resp.(*connect.Response[Resp]), nil
+}
+
+// AnalyzeSeries requires a complete V2 range: independently analyzing the V1
+// and V2 sides of a split cannot preserve an event's baseline or duration.
+func (r *Router) AnalyzeSeries(
+	ctx context.Context,
+	c *connect.Request[querierv1.AnalyzeSeriesRequest],
+) (*connect.Response[querierv1.AnalyzeSeriesResponse], error) {
+	tenantIDs, err := tenant.TenantIDs(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if len(tenantIDs) != 1 {
+		level.Warn(r.logger).Log("msg", "ignoring inter-tenant query overrides", "tenants", tenantIDs)
+	}
+	overrides := r.overrides.ReadPathOverrides(tenantIDs[0])
+	if !overrides.EnableQueryBackend {
+		return nil, v2AnalysisRequiredError()
+	}
+	splitTime, err := overrides.EnableQueryBackendFrom.SplitTime(func() (time.Time, error) {
+		return r.resolver.OldestProfileTime(ctx, tenantIDs[0])
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	queryRange := phlaremodel.GetSafeTimeRange(time.Now(), c.Msg)
+	if split := model.TimeFromUnixNano(splitTime.UnixNano()); split.After(queryRange.Start) {
+		return nil, v2AnalysisRequiredError()
+	}
+	return r.newFrontend.AnalyzeSeries(ctx, c)
+}
+
+func v2AnalysisRequiredError() *connect.Error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("time series analysis requires the V2 query backend for the complete query range"))
 }

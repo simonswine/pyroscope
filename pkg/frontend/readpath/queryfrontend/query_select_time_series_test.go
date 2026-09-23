@@ -65,6 +65,26 @@ func TestSelectHeatmap_RejectsSubMillisecondStep(t *testing.T) {
 	}
 }
 
+func TestAnalyzeSeries_RejectsSubMillisecondStep(t *testing.T) {
+	limits := mockfrontend.NewMockLimits(t)
+	limits.On("MaxQueryLookback", "test-tenant").Return(time.Duration(0)).Maybe()
+	limits.On("MaxQueryLength", "test-tenant").Return(time.Duration(0)).Maybe()
+	qf := NewQueryFrontend(log.NewNopLogger(), limits, frontend.Config{}, nil, nil, nil, nil, nil, nil)
+	ctx := tenant.InjectTenantID(context.Background(), "test-tenant")
+
+	_, err := qf.AnalyzeSeries(ctx, connect.NewRequest(&querierv1.AnalyzeSeriesRequest{
+		ProfileTypeID: "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+		LabelSelector: "{}",
+		Start:         1000,
+		End:           2000,
+		Step:          0.0005,
+	}))
+
+	require.Error(t, err)
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.Contains(t, err.Error(), "step must be >= 1ms")
+}
+
 func formatStep(s float64) string {
 	if s == 0 {
 		return "0"

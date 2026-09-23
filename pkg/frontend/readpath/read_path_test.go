@@ -378,6 +378,36 @@ func (s *routerTestSuite) Test_TimeSeries_NoLimit() {
 	s.Assert().Equal(expected, resp)
 }
 
+func (s *routerTestSuite) TestAnalyzeSeries_V2Only() {
+	s.overrides.On("ReadPathOverrides", "tenant-a").Return(Config{EnableQueryBackend: true})
+	req := connect.NewRequest(&querierv1.AnalyzeSeriesRequest{Start: 10000, End: 20000})
+	expected := connect.NewResponse(&querierv1.AnalyzeSeriesResponse{})
+	s.newFrontend.On("AnalyzeSeries", mock.Anything, req).Return(expected, nil).Once()
+
+	resp, err := s.router.AnalyzeSeries(s.ctx, req)
+	s.Require().NoError(err)
+	s.Equal(expected, resp)
+}
+
+func (s *routerTestSuite) TestAnalyzeSeries_RejectsV1AndHybridRanges() {
+	s.Run("v1", func() {
+		s.overrides.On("ReadPathOverrides", "tenant-a").Return(Config{})
+		_, err := s.router.AnalyzeSeries(s.ctx, connect.NewRequest(&querierv1.AnalyzeSeriesRequest{Start: 10000, End: 20000}))
+		s.Require().Error(err)
+		s.Equal(connect.CodeUnimplemented, connect.CodeOf(err))
+	})
+
+	s.Run("hybrid", func() {
+		s.overrides.On("ReadPathOverrides", "tenant-a").Return(Config{
+			EnableQueryBackend:     true,
+			EnableQueryBackendFrom: QueryBackendFrom{Time: time.Unix(15, 0)},
+		})
+		_, err := s.router.AnalyzeSeries(s.ctx, connect.NewRequest(&querierv1.AnalyzeSeriesRequest{Start: 10000, End: 20000}))
+		s.Require().Error(err)
+		s.Equal(connect.CodeUnimplemented, connect.CodeOf(err))
+	})
+}
+
 func (s *routerTestSuite) Test_Auto_ResolvesFromMetastore() {
 	s.overrides.On("ReadPathOverrides", "tenant-a").Return(Config{
 		EnableQueryBackend:     true,

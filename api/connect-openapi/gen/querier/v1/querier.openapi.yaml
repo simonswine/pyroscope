@@ -45,6 +45,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/querier.v1.AnalyzeQueryResponse'
+  /querier.v1.QuerierService/AnalyzeSeries:
+    post:
+      tags:
+        - scope/public
+        - querier.v1.QuerierService
+      summary: AnalyzeSeries detects notable changes in matching profile time series.  The endpoint requires the V2 query backend for the requested time range.
+      description: |-
+        AnalyzeSeries detects notable changes in matching profile time series.
+         The endpoint requires the V2 query backend for the requested time range.
+      operationId: querier.v1.QuerierService.AnalyzeSeries
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/querier.v1.AnalyzeSeriesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/querier.v1.AnalyzeSeriesResponse'
   /querier.v1.QuerierService/Diff:
     post:
       tags:
@@ -984,6 +1023,81 @@ components:
           $ref: '#/components/schemas/querier.v1.QueryImpact'
       title: AnalyzeQueryResponse
       additionalProperties: false
+    querier.v1.AnalyzeSeriesRequest:
+      type: object
+      properties:
+        profileTypeID:
+          type: string
+          examples:
+            - process_cpu:cpu:nanoseconds:cpu:nanoseconds
+          title: profile_typeID
+          description: |-
+            Profile Type ID string in the form
+             <name>:<type>:<unit>:<period_type>:<period_unit>.
+        labelSelector:
+          type: string
+          examples:
+            - '{namespace="my-namespace"}'
+          title: label_selector
+          description: Label selector string.
+        start:
+          type:
+            - integer
+            - string
+          examples:
+            - "1676282400000"
+          title: start
+          format: int64
+          description: Milliseconds since epoch.
+        end:
+          type:
+            - integer
+            - string
+          examples:
+            - "1676289600000"
+          title: end
+          format: int64
+          description: Milliseconds since epoch.
+        groupBy:
+          type: array
+          examples:
+            - - pod
+          items:
+            type: string
+            examples:
+              - - pod
+          title: group_by
+          description: Labels used to group matching profiles into series.
+        step:
+          type: number
+          title: step
+          format: double
+          description: Query resolution step width in seconds.
+        limit:
+          type:
+            - integer
+            - string
+          title: limit
+          format: int64
+          description: Limit the result to events from the top N series by strongest event score.
+          nullable: true
+        config:
+          title: config
+          description: Optional detector settings. Unset fields use server defaults.
+          $ref: '#/components/schemas/querier.v1.TimeSeriesAnalysisConfig'
+      title: AnalyzeSeriesRequest
+      additionalProperties: false
+    querier.v1.AnalyzeSeriesResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/querier.v1.TimeSeriesEvent'
+          title: events
+          description: Events are sorted chronologically, then deterministically by labels.
+      title: AnalyzeSeriesResponse
+      additionalProperties: false
     querier.v1.AsyncQueryRequest:
       type: object
       properties:
@@ -1755,6 +1869,111 @@ components:
           title: labels_set
       title: SeriesResponse
       additionalProperties: false
+    querier.v1.TimeSeriesAnalysisConfig:
+      type: object
+      properties:
+        baselineWindow:
+          type: integer
+          title: baseline_window
+          description: Number of preceding observed points used to calculate the baseline.
+        confirmationWindow:
+          type: integer
+          title: confirmation_window
+          description: Number of subsequent observed points used to classify an event.
+        minimumSustainedPoints:
+          type: integer
+          title: minimum_sustained_points
+          description: Number of elevated points required for an event to be sustained.
+        minimumRelativeChange:
+          type: number
+          title: minimum_relative_change
+          format: double
+          description: Minimum absolute fractional deviation from the baseline.
+        scoreThreshold:
+          type: number
+          title: score_threshold
+          format: double
+          description: Minimum robust score, based on median absolute deviation.
+        recoveryThresholdRatio:
+          type: number
+          title: recovery_threshold_ratio
+          format: double
+          description: Fraction of minimum_relative_change used to decide recovery.
+        flatnessThreshold:
+          type: number
+          title: flatness_threshold
+          format: double
+          description: Maximum normalized range for a series to be considered flat.
+      title: TimeSeriesAnalysisConfig
+      additionalProperties: false
+    querier.v1.TimeSeriesEvent:
+      type: object
+      properties:
+        type:
+          title: type
+          $ref: '#/components/schemas/querier.v1.TimeSeriesEventType'
+        duration:
+          title: duration
+          $ref: '#/components/schemas/querier.v1.TimeSeriesEventDuration'
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/types.v1.LabelPair'
+          title: labels
+        startTime:
+          type:
+            - integer
+            - string
+          title: start_time
+          format: int64
+          description: Milliseconds since epoch.
+        endTime:
+          type:
+            - integer
+            - string
+          title: end_time
+          format: int64
+          description: Milliseconds since epoch.
+        peakTime:
+          type:
+            - integer
+            - string
+          title: peak_time
+          format: int64
+          description: Milliseconds since epoch.
+        baseline:
+          type: number
+          title: baseline
+          format: double
+        peakValue:
+          type: number
+          title: peak_value
+          format: double
+        relativeChange:
+          type: number
+          title: relative_change
+          format: double
+        score:
+          type: number
+          title: score
+          format: double
+      title: TimeSeriesEvent
+      additionalProperties: false
+    querier.v1.TimeSeriesEventDuration:
+      type: string
+      title: TimeSeriesEventDuration
+      enum:
+        - TIME_SERIES_EVENT_DURATION_UNSPECIFIED
+        - TIME_SERIES_EVENT_DURATION_SHORT_TERM
+        - TIME_SERIES_EVENT_DURATION_SUSTAINED
+    querier.v1.TimeSeriesEventType:
+      type: string
+      title: TimeSeriesEventType
+      enum:
+        - TIME_SERIES_EVENT_TYPE_UNSPECIFIED
+        - TIME_SERIES_EVENT_TYPE_SPIKE
+        - TIME_SERIES_EVENT_TYPE_DROP
+        - TIME_SERIES_EVENT_TYPE_INCREASE
     types.v1.Exemplar:
       type: object
       properties:

@@ -260,6 +260,30 @@ func (l LogSpanParametersWrapper) SelectSeries(ctx context.Context, c *connect.R
 	return resp, err
 }
 
+func (l LogSpanParametersWrapper) AnalyzeSeries(ctx context.Context, c *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error) {
+	spanName := "AnalyzeSeries"
+	sp, ctx := tracing.StartSpanFromContext(ctx, spanName)
+	defer sp.Finish()
+	ctx, stats := ContextWithQueryStats(ctx)
+
+	var resp *connect.Response[querierv1.AnalyzeSeriesResponse]
+	err := l.logQuery(l.logWithRequestMetadata(ctx, c), stats, []interface{}{
+		"method", spanName,
+		"start", model.Time(c.Msg.Start).Time().String(),
+		"end", model.Time(c.Msg.End).Time().String(),
+		"query_window", model.Time(c.Msg.End).Sub(model.Time(c.Msg.Start)).String(),
+		"selector", c.Msg.LabelSelector,
+		"profile_type", c.Msg.ProfileTypeID,
+		"step", c.Msg.Step,
+		"by", lazyJoin(c.Msg.GroupBy),
+		"limit", c.Msg.Limit,
+	}, func() (err error) {
+		resp, err = l.client.AnalyzeSeries(ctx, c)
+		return err
+	})
+	return resp, err
+}
+
 func (l LogSpanParametersWrapper) SelectHeatmap(ctx context.Context, c *connect.Request[querierv1.SelectHeatmapRequest]) (*connect.Response[querierv1.SelectHeatmapResponse], error) {
 	spanName := "SelectHeatmap"
 	sp, ctx := tracing.StartSpanFromContext(ctx, spanName)

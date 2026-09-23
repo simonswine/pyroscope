@@ -85,6 +85,65 @@ func (_c *MockQuerierServiceClient_AnalyzeQuery_Call) RunAndReturn(run func(cont
 	return _c
 }
 
+// AnalyzeSeries provides a mock function with given fields: _a0, _a1
+func (_m *MockQuerierServiceClient) AnalyzeSeries(_a0 context.Context, _a1 *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error) {
+	ret := _m.Called(_a0, _a1)
+
+	if len(ret) == 0 {
+		panic("no return value specified for AnalyzeSeries")
+	}
+
+	var r0 *connect.Response[querierv1.AnalyzeSeriesResponse]
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error)); ok {
+		return rf(_a0, _a1)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, *connect.Request[querierv1.AnalyzeSeriesRequest]) *connect.Response[querierv1.AnalyzeSeriesResponse]); ok {
+		r0 = rf(_a0, _a1)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*connect.Response[querierv1.AnalyzeSeriesResponse])
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, *connect.Request[querierv1.AnalyzeSeriesRequest]) error); ok {
+		r1 = rf(_a0, _a1)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockQuerierServiceClient_AnalyzeSeries_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AnalyzeSeries'
+type MockQuerierServiceClient_AnalyzeSeries_Call struct {
+	*mock.Call
+}
+
+// AnalyzeSeries is a helper method to define mock.On call
+//   - _a0 context.Context
+//   - _a1 *connect.Request[querierv1.AnalyzeSeriesRequest]
+func (_e *MockQuerierServiceClient_Expecter) AnalyzeSeries(_a0 interface{}, _a1 interface{}) *MockQuerierServiceClient_AnalyzeSeries_Call {
+	return &MockQuerierServiceClient_AnalyzeSeries_Call{Call: _e.mock.On("AnalyzeSeries", _a0, _a1)}
+}
+
+func (_c *MockQuerierServiceClient_AnalyzeSeries_Call) Run(run func(_a0 context.Context, _a1 *connect.Request[querierv1.AnalyzeSeriesRequest])) *MockQuerierServiceClient_AnalyzeSeries_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*connect.Request[querierv1.AnalyzeSeriesRequest]))
+	})
+	return _c
+}
+
+func (_c *MockQuerierServiceClient_AnalyzeSeries_Call) Return(_a0 *connect.Response[querierv1.AnalyzeSeriesResponse], _a1 error) *MockQuerierServiceClient_AnalyzeSeries_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockQuerierServiceClient_AnalyzeSeries_Call) RunAndReturn(run func(context.Context, *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error)) *MockQuerierServiceClient_AnalyzeSeries_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // AsyncQuery provides a mock function with given fields: _a0, _a1
 func (_m *MockQuerierServiceClient) AsyncQuery(_a0 context.Context, _a1 *connect.Request[querierv1.AsyncQueryRequest]) (*connect.Response[querierv1.AsyncQueryResponse], error) {
 	ret := _m.Called(_a0, _a1)

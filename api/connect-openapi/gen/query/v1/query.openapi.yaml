@@ -535,6 +535,111 @@ components:
         - HEATMAP_QUERY_TYPE_UNSPECIFIED
         - HEATMAP_QUERY_TYPE_INDIVIDUAL
         - HEATMAP_QUERY_TYPE_SPAN
+    querier.v1.TimeSeriesAnalysisConfig:
+      type: object
+      properties:
+        baselineWindow:
+          type: integer
+          title: baseline_window
+          description: Number of preceding observed points used to calculate the baseline.
+        confirmationWindow:
+          type: integer
+          title: confirmation_window
+          description: Number of subsequent observed points used to classify an event.
+        minimumSustainedPoints:
+          type: integer
+          title: minimum_sustained_points
+          description: Number of elevated points required for an event to be sustained.
+        minimumRelativeChange:
+          type: number
+          title: minimum_relative_change
+          format: double
+          description: Minimum absolute fractional deviation from the baseline.
+        scoreThreshold:
+          type: number
+          title: score_threshold
+          format: double
+          description: Minimum robust score, based on median absolute deviation.
+        recoveryThresholdRatio:
+          type: number
+          title: recovery_threshold_ratio
+          format: double
+          description: Fraction of minimum_relative_change used to decide recovery.
+        flatnessThreshold:
+          type: number
+          title: flatness_threshold
+          format: double
+          description: Maximum normalized range for a series to be considered flat.
+      title: TimeSeriesAnalysisConfig
+      additionalProperties: false
+    querier.v1.TimeSeriesEvent:
+      type: object
+      properties:
+        type:
+          title: type
+          $ref: '#/components/schemas/querier.v1.TimeSeriesEventType'
+        duration:
+          title: duration
+          $ref: '#/components/schemas/querier.v1.TimeSeriesEventDuration'
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/types.v1.LabelPair'
+          title: labels
+        startTime:
+          type:
+            - integer
+            - string
+          title: start_time
+          format: int64
+          description: Milliseconds since epoch.
+        endTime:
+          type:
+            - integer
+            - string
+          title: end_time
+          format: int64
+          description: Milliseconds since epoch.
+        peakTime:
+          type:
+            - integer
+            - string
+          title: peak_time
+          format: int64
+          description: Milliseconds since epoch.
+        baseline:
+          type: number
+          title: baseline
+          format: double
+        peakValue:
+          type: number
+          title: peak_value
+          format: double
+        relativeChange:
+          type: number
+          title: relative_change
+          format: double
+        score:
+          type: number
+          title: score
+          format: double
+      title: TimeSeriesEvent
+      additionalProperties: false
+    querier.v1.TimeSeriesEventDuration:
+      type: string
+      title: TimeSeriesEventDuration
+      enum:
+        - TIME_SERIES_EVENT_DURATION_UNSPECIFIED
+        - TIME_SERIES_EVENT_DURATION_SHORT_TERM
+        - TIME_SERIES_EVENT_DURATION_SUSTAINED
+    querier.v1.TimeSeriesEventType:
+      type: string
+      title: TimeSeriesEventType
+      enum:
+        - TIME_SERIES_EVENT_TYPE_UNSPECIFIED
+        - TIME_SERIES_EVENT_TYPE_SPIKE
+        - TIME_SERIES_EVENT_TYPE_DROP
+        - TIME_SERIES_EVENT_TYPE_INCREASE
     query.v1.AttributeTable:
       type: object
       properties:
@@ -823,6 +928,12 @@ components:
         collectDiagnostics:
           type: boolean
           title: collect_diagnostics
+        finalize:
+          type: boolean
+          title: finalize
+          description: |-
+            Run final report processing after this invocation completes. Set only for
+             the root invocation; child invocations must clear this flag.
       title: InvokeOptions
       additionalProperties: false
     query.v1.InvokeRequest:
@@ -1018,12 +1129,15 @@ components:
           $ref: '#/components/schemas/query.v1.HeatmapQuery'
         timeSeriesCompact:
           title: time_series_compact
+          $ref: '#/components/schemas/query.v1.TimeSeriesQuery'
+        timeSeriesAnalysis:
+          title: time_series_analysis
           description: |-
             function_details
              call_graph
              top_table
              ...
-          $ref: '#/components/schemas/query.v1.TimeSeriesQuery'
+          $ref: '#/components/schemas/query.v1.TimeSeriesAnalysisQuery'
       title: Query
       additionalProperties: false
     query.v1.QueryNode:
@@ -1113,6 +1227,7 @@ components:
         - QUERY_PPROF
         - QUERY_HEATMAP
         - QUERY_TIME_SERIES_COMPACT
+        - QUERY_TIME_SERIES_ANALYSIS
     query.v1.Report:
       type: object
       properties:
@@ -1146,6 +1261,9 @@ components:
         timeSeriesCompact:
           title: time_series_compact
           $ref: '#/components/schemas/query.v1.TimeSeriesCompactReport'
+        timeSeriesAnalysis:
+          title: time_series_analysis
+          $ref: '#/components/schemas/query.v1.TimeSeriesAnalysisReport'
       title: Report
       additionalProperties: false
     query.v1.ReportType:
@@ -1161,6 +1279,7 @@ components:
         - REPORT_PPROF
         - REPORT_HEATMAP
         - REPORT_TIME_SERIES_COMPACT
+        - REPORT_TIME_SERIES_ANALYSIS
     query.v1.Series:
       type: object
       properties:
@@ -1204,6 +1323,50 @@ components:
             $ref: '#/components/schemas/types.v1.Labels'
           title: series_labels
       title: SeriesLabelsReport
+      additionalProperties: false
+    query.v1.TimeSeriesAnalysisQuery:
+      type: object
+      properties:
+        step:
+          type: number
+          title: step
+          format: double
+        groupBy:
+          type: array
+          items:
+            type: string
+          title: group_by
+        limit:
+          type:
+            - integer
+            - string
+          title: limit
+          format: int64
+        config:
+          title: config
+          $ref: '#/components/schemas/querier.v1.TimeSeriesAnalysisConfig'
+      title: TimeSeriesAnalysisQuery
+      additionalProperties: false
+    query.v1.TimeSeriesAnalysisReport:
+      type: object
+      properties:
+        query:
+          title: query
+          $ref: '#/components/schemas/query.v1.TimeSeriesAnalysisQuery'
+        timeSeries:
+          type: array
+          items:
+            $ref: '#/components/schemas/types.v1.Series'
+          title: time_series
+          description: |-
+            Intermediate series retained so parent query-plan nodes can merge and
+             analyze the complete series.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/querier.v1.TimeSeriesEvent'
+          title: events
+      title: TimeSeriesAnalysisReport
       additionalProperties: false
     query.v1.TimeSeriesCompactReport:
       type: object

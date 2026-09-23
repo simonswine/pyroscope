@@ -144,6 +144,65 @@ In a JSON request body, escape the selector's quotes:
 ```
 {{% /admonition %}}
 
+#### `/querier.v1.QuerierService/AnalyzeSeries`
+
+AnalyzeSeries detects notable changes in matching profile time series.
+ The endpoint requires the V2 query backend for the requested time range.
+
+A request body with the following fields is required:
+
+|Field | Description | Example |
+|:-----|:------------|:--------|
+|`start` | Milliseconds since epoch. | `1676282400000` |
+|`end` | Milliseconds since epoch. | `1676289600000` |
+|`config.baselineWindow` | Number of preceding observed points used to calculate the baseline. |  |
+|`config.confirmationWindow` | Number of subsequent observed points used to classify an event. |  |
+|`config.flatnessThreshold` | Maximum normalized range for a series to be considered flat. |  |
+|`config.minimumRelativeChange` | Minimum absolute fractional deviation from the baseline. |  |
+|`config.minimumSustainedPoints` | Number of elevated points required for an event to be sustained. |  |
+|`config.recoveryThresholdRatio` | Fraction of minimum_relative_change used to decide recovery. |  |
+|`config.scoreThreshold` | Minimum robust score, based on median absolute deviation. |  |
+|`groupBy` | Labels used to group matching profiles into series. | `["pod"]` |
+|`labelSelector` | Label selector string. | `{namespace="my-namespace"}` |
+|`limit` | Limit the result to events from the top N series by strongest event score. |  |
+|`profileTypeID` | Profile Type ID string in the form  <name>:<type>:<unit>:<period_type>:<period_unit>. | `process_cpu:cpu:nanoseconds:cpu:nanoseconds` |
+|`step` | Query resolution step width in seconds. |  |
+
+{{< code >}}
+```curl
+curl \
+  -H "Content-Type: application/json" \
+  -d '{
+      "end": '$(date +%s)000',
+      "groupBy": [
+        "pod"
+      ],
+      "labelSelector": "{namespace=\"my-namespace\"}",
+      "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+      "start": '$(expr $(date +%s) - 3600 )000'
+    }' \
+  http://localhost:4040/querier.v1.QuerierService/AnalyzeSeries
+```
+
+```python
+import requests
+import datetime
+body = {
+    "end": int(datetime.datetime.now().timestamp() * 1000),
+    "groupBy": [
+      "pod"
+    ],
+    "labelSelector": "{namespace=\"my-namespace\"}",
+    "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+    "start": int((datetime.datetime.now()- datetime.timedelta(hours = 1)).timestamp() * 1000)
+  }
+url = 'http://localhost:4040/querier.v1.QuerierService/AnalyzeSeries'
+resp = requests.post(url, json=body)
+print(resp)
+print(resp.content)
+```
+
+{{< /code >}}
 #### `/querier.v1.QuerierService/Diff`
 
 Diff returns a diff of two profiles

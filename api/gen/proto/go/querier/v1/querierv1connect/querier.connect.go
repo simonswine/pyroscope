@@ -60,6 +60,9 @@ const (
 	// QuerierServiceSelectSeriesProcedure is the fully-qualified name of the QuerierService's
 	// SelectSeries RPC.
 	QuerierServiceSelectSeriesProcedure = "/querier.v1.QuerierService/SelectSeries"
+	// QuerierServiceAnalyzeSeriesProcedure is the fully-qualified name of the QuerierService's
+	// AnalyzeSeries RPC.
+	QuerierServiceAnalyzeSeriesProcedure = "/querier.v1.QuerierService/AnalyzeSeries"
 	// QuerierServiceSelectHeatmapProcedure is the fully-qualified name of the QuerierService's
 	// SelectHeatmap RPC.
 	QuerierServiceSelectHeatmapProcedure = "/querier.v1.QuerierService/SelectHeatmap"
@@ -105,6 +108,9 @@ type QuerierServiceClient interface {
 	// SelectSeries returns a time series for the total sum of the requested
 	// profiles.
 	SelectSeries(context.Context, *connect.Request[v1.SelectSeriesRequest]) (*connect.Response[v1.SelectSeriesResponse], error)
+	// AnalyzeSeries detects notable changes in matching profile time series.
+	// The endpoint requires the V2 query backend for the requested time range.
+	AnalyzeSeries(context.Context, *connect.Request[v1.AnalyzeSeriesRequest]) (*connect.Response[v1.AnalyzeSeriesResponse], error)
 	// SelectHeatmap returns a heatmap visualization for the requested profiles.
 	// Note: This endpoint is only available in the v2 storage layer
 	SelectHeatmap(context.Context, *connect.Request[v1.SelectHeatmapRequest]) (*connect.Response[v1.SelectHeatmapResponse], error)
@@ -174,6 +180,12 @@ func NewQuerierServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(querierServiceMethods.ByName("SelectSeries")),
 			connect.WithClientOptions(opts...),
 		),
+		analyzeSeries: connect.NewClient[v1.AnalyzeSeriesRequest, v1.AnalyzeSeriesResponse](
+			httpClient,
+			baseURL+QuerierServiceAnalyzeSeriesProcedure,
+			connect.WithSchema(querierServiceMethods.ByName("AnalyzeSeries")),
+			connect.WithClientOptions(opts...),
+		),
 		selectHeatmap: connect.NewClient[v1.SelectHeatmapRequest, v1.SelectHeatmapResponse](
 			httpClient,
 			baseURL+QuerierServiceSelectHeatmapProcedure,
@@ -211,6 +223,7 @@ type querierServiceClient struct {
 	selectMergeSpanProfile *connect.Client[v1.SelectMergeSpanProfileRequest, v1.SelectMergeSpanProfileResponse]
 	selectMergeProfile     *connect.Client[v1.SelectMergeProfileRequest, v12.Profile]
 	selectSeries           *connect.Client[v1.SelectSeriesRequest, v1.SelectSeriesResponse]
+	analyzeSeries          *connect.Client[v1.AnalyzeSeriesRequest, v1.AnalyzeSeriesResponse]
 	selectHeatmap          *connect.Client[v1.SelectHeatmapRequest, v1.SelectHeatmapResponse]
 	diff                   *connect.Client[v1.DiffRequest, v1.DiffResponse]
 	getProfileStats        *connect.Client[v11.GetProfileStatsRequest, v11.GetProfileStatsResponse]
@@ -255,6 +268,11 @@ func (c *querierServiceClient) SelectMergeProfile(ctx context.Context, req *conn
 // SelectSeries calls querier.v1.QuerierService.SelectSeries.
 func (c *querierServiceClient) SelectSeries(ctx context.Context, req *connect.Request[v1.SelectSeriesRequest]) (*connect.Response[v1.SelectSeriesResponse], error) {
 	return c.selectSeries.CallUnary(ctx, req)
+}
+
+// AnalyzeSeries calls querier.v1.QuerierService.AnalyzeSeries.
+func (c *querierServiceClient) AnalyzeSeries(ctx context.Context, req *connect.Request[v1.AnalyzeSeriesRequest]) (*connect.Response[v1.AnalyzeSeriesResponse], error) {
+	return c.analyzeSeries.CallUnary(ctx, req)
 }
 
 // SelectHeatmap calls querier.v1.QuerierService.SelectHeatmap.
@@ -309,6 +327,9 @@ type QuerierServiceHandler interface {
 	// SelectSeries returns a time series for the total sum of the requested
 	// profiles.
 	SelectSeries(context.Context, *connect.Request[v1.SelectSeriesRequest]) (*connect.Response[v1.SelectSeriesResponse], error)
+	// AnalyzeSeries detects notable changes in matching profile time series.
+	// The endpoint requires the V2 query backend for the requested time range.
+	AnalyzeSeries(context.Context, *connect.Request[v1.AnalyzeSeriesRequest]) (*connect.Response[v1.AnalyzeSeriesResponse], error)
 	// SelectHeatmap returns a heatmap visualization for the requested profiles.
 	// Note: This endpoint is only available in the v2 storage layer
 	SelectHeatmap(context.Context, *connect.Request[v1.SelectHeatmapRequest]) (*connect.Response[v1.SelectHeatmapResponse], error)
@@ -374,6 +395,12 @@ func NewQuerierServiceHandler(svc QuerierServiceHandler, opts ...connect.Handler
 		connect.WithSchema(querierServiceMethods.ByName("SelectSeries")),
 		connect.WithHandlerOptions(opts...),
 	)
+	querierServiceAnalyzeSeriesHandler := connect.NewUnaryHandler(
+		QuerierServiceAnalyzeSeriesProcedure,
+		svc.AnalyzeSeries,
+		connect.WithSchema(querierServiceMethods.ByName("AnalyzeSeries")),
+		connect.WithHandlerOptions(opts...),
+	)
 	querierServiceSelectHeatmapHandler := connect.NewUnaryHandler(
 		QuerierServiceSelectHeatmapProcedure,
 		svc.SelectHeatmap,
@@ -416,6 +443,8 @@ func NewQuerierServiceHandler(svc QuerierServiceHandler, opts ...connect.Handler
 			querierServiceSelectMergeProfileHandler.ServeHTTP(w, r)
 		case QuerierServiceSelectSeriesProcedure:
 			querierServiceSelectSeriesHandler.ServeHTTP(w, r)
+		case QuerierServiceAnalyzeSeriesProcedure:
+			querierServiceAnalyzeSeriesHandler.ServeHTTP(w, r)
 		case QuerierServiceSelectHeatmapProcedure:
 			querierServiceSelectHeatmapHandler.ServeHTTP(w, r)
 		case QuerierServiceDiffProcedure:
@@ -463,6 +492,10 @@ func (UnimplementedQuerierServiceHandler) SelectMergeProfile(context.Context, *c
 
 func (UnimplementedQuerierServiceHandler) SelectSeries(context.Context, *connect.Request[v1.SelectSeriesRequest]) (*connect.Response[v1.SelectSeriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("querier.v1.QuerierService.SelectSeries is not implemented"))
+}
+
+func (UnimplementedQuerierServiceHandler) AnalyzeSeries(context.Context, *connect.Request[v1.AnalyzeSeriesRequest]) (*connect.Response[v1.AnalyzeSeriesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("querier.v1.QuerierService.AnalyzeSeries is not implemented"))
 }
 
 func (UnimplementedQuerierServiceHandler) SelectHeatmap(context.Context, *connect.Request[v1.SelectHeatmapRequest]) (*connect.Response[v1.SelectHeatmapResponse], error) {

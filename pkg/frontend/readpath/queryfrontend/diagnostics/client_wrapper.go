@@ -138,6 +138,14 @@ func (w *Wrapper) SelectSeries(ctx context.Context, req *connect.Request[querier
 	return resp, err
 }
 
+func (w *Wrapper) AnalyzeSeries(ctx context.Context, req *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error) {
+	resp, err := w.client.AnalyzeSeries(ctx, req)
+	if resp != nil {
+		flushDiagnostics(w, ctx, "AnalyzeSeries", req, resp)
+	}
+	return resp, err
+}
+
 func (w *Wrapper) SelectHeatmap(ctx context.Context, req *connect.Request[querierv1.SelectHeatmapRequest]) (*connect.Response[querierv1.SelectHeatmapResponse], error) {
 	resp, err := w.client.SelectHeatmap(ctx, req)
 	if resp != nil {

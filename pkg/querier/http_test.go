@@ -146,6 +146,10 @@ func (m *mockQuerierClient) SelectSeries(context.Context, *connect.Request[queri
 	return nil, nil
 }
 
+func (m *mockQuerierClient) AnalyzeSeries(context.Context, *connect.Request[querierv1.AnalyzeSeriesRequest]) (*connect.Response[querierv1.AnalyzeSeriesResponse], error) {
+	return nil, nil
+}
+
 func (m *mockQuerierClient) Diff(context.Context, *connect.Request[querierv1.DiffRequest]) (*connect.Response[querierv1.DiffResponse], error) {
 	return nil, nil
 }
