@@ -116,13 +116,34 @@ func (n *Node) PromoteToLeader(request *raftnodepb.PromoteToLeaderRequest) (*raf
 		return nil, status.Error(codes.InvalidArgument, "a node cannot promote itself")
 	}
 
-	if err := n.raft.LeadershipTransferToServer(raft.ServerID(request.ServerId), raft.ServerAddress(request.ServerId)).Error(); err != nil {
+	addr, err := n.raftServerAddress(request.ServerId)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := n.raft.LeadershipTransferToServer(raft.ServerID(request.ServerId), addr).Error(); err != nil {
 		level.Error(n.logger).Log("msg", "failed to promote node, error from raft", "node", request.ServerId, "err", err)
 		return nil, WithRaftLeaderStatusDetails(err, n.raft)
 	}
 
 	level.Info(n.logger).Log("msg", "node promoted", "id", request.ServerId)
 	return &raftnodepb.PromoteToLeaderResponse{}, nil
+}
+
+// raftServerAddress looks up the Raft transport address for the given server ID
+// from the current Raft configuration. LeadershipTransferToServer requires a
+// host:port address, not the logical server ID.
+func (n *Node) raftServerAddress(serverID string) (raft.ServerAddress, error) {
+	cfgFuture := n.raft.GetConfiguration()
+	if err := cfgFuture.Error(); err != nil {
+		return "", fmt.Errorf("failed to get raft configuration: %w", err)
+	}
+	for _, server := range cfgFuture.Configuration().Servers {
+		if string(server.ID) == serverID {
+			return server.Address, nil
+		}
+	}
+	return "", fmt.Errorf("server %q not found in raft configuration", serverID)
 }
 
 func (n *Node) verifyCurrentTerm(requestTerm uint64) error {
