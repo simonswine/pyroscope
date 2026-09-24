@@ -38,7 +38,18 @@ var schedulerSample = regexp.MustCompile(`^\w*compaction_scheduler_queue_jobs\{`
 
 func schedulerIdle(metrics string) bool {
 	found := false
+	healthy := false
 	for _, line := range strings.Split(metrics, "\n") {
+		// Queue metrics are lazy: after recovery an empty scheduler may have
+		// no initialized levels and therefore emit no queue samples. Require
+		// a runtime sample so an empty or invalid response is not called idle.
+		if strings.HasPrefix(line, "go_goroutines ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				value, err := strconv.ParseUint(fields[1], 10, 64)
+				healthy = err == nil && value > 0
+			}
+		}
 		if !schedulerSample.MatchString(line) {
 			continue
 		}
@@ -52,7 +63,7 @@ func schedulerIdle(metrics string) bool {
 		}
 		found = true
 	}
-	return found
+	return found || healthy
 }
 
 func getMetrics(ctx context.Context, url string) ([]byte, error) {
