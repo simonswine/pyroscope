@@ -89,15 +89,28 @@ func TestExpired(t *testing.T) {
 
 func TestSchedulerIdle(t *testing.T) {
 	for _, tt := range []struct {
+		name    string
 		metrics string
 		want    bool
 	}{
-		{"", false}, {`compaction_scheduler_queue_jobs{level="0",status="assigned"} 0`, true},
-		{`compaction_scheduler_queue_jobs{level="0",status="assigned"} 1`, false}, {`pyroscope_compaction_scheduler_queue_jobs{level="0"} NaN`, false},
+		{"empty scrape", "", false},
+		{"invalid scrape", "not metrics", false},
+		{"recovered empty scheduler", "# TYPE go_goroutines gauge\ngo_goroutines 42\n", true},
+		{"invalid runtime sample", "go_goroutines NaN", false},
+		{"zero runtime sample", "go_goroutines 0", false},
+		{"missing runtime value", "go_goroutines ", false},
+		{"idle queue", `compaction_scheduler_queue_jobs{level="0",status="assigned"} 0`, true},
+		{"busy queue", `compaction_scheduler_queue_jobs{level="0",status="assigned"} 1`, false},
+		{"invalid queue", `pyroscope_compaction_scheduler_queue_jobs{level="0"} NaN`, false},
+		{"runtime does not override busy queue", "go_goroutines 42\n" + `compaction_scheduler_queue_jobs{level="0",status="assigned"} 1`, false},
+		{"runtime does not override malformed queue", "go_goroutines 42\n" + `compaction_scheduler_queue_jobs{level="0"}`, false},
+		{"all levels must be idle", "compaction_scheduler_queue_jobs{level=\"0\"} 0\ncompaction_scheduler_queue_jobs{level=\"1\"} 2", false},
 	} {
-		if schedulerIdle(tt.metrics) != tt.want {
-			t.Fatalf("unexpected idle result for %q", tt.metrics)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if schedulerIdle(tt.metrics) != tt.want {
+				t.Fatalf("unexpected idle result for %q", tt.metrics)
+			}
+		})
 	}
 }
 
