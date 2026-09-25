@@ -18,6 +18,9 @@ const stateVersion = 1
 
 type sessionState struct {
 	Version        int
+	Kind           string
+	ParentRunID    string
+	StorageRunID   string
 	Config         runConfig
 	SourceDir      string
 	Plan           *runPlan

@@ -4,8 +4,6 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -124,11 +122,11 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 			return err
 		}
 	}
-	secretBytes := make([]byte, 24)
-	if _, err := rand.Read(secretBytes); err != nil {
+	credentials, err := createStorageCredentials(paths)
+	if err != nil {
 		return err
 	}
-	access, secret := "benchmark", hex.EncodeToString(secretBytes)
+	access, secret := credentials.AccessKey, credentials.SecretKey
 	const minioURL = "http://127.0.0.1:9000"
 	const bucket = "macro-benchmark"
 	log.Print("starting pgsty MinIO on CPUs 2-3")
@@ -197,6 +195,9 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	}
 	idle := endpointManifest{MinioURL: minioURL, Processes: map[string]int{"minio": minio.cmd.Process.Pid}}
 	if err := publishEndpoints(paths, idle); err != nil {
+		return err
+	}
+	if err := publishIngestReady(paths, plan, windows); err != nil {
 		return err
 	}
 	return runComparisons(ctx, paths, inputs, plan, windows, idle, clusterEnv)

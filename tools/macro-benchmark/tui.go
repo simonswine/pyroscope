@@ -162,6 +162,19 @@ func runTUI(ctx context.Context) error {
 					start(states[selected], stopSession)
 				case 'r':
 					start(states[selected], resumeSession)
+				case 'R':
+					child, err := store.createRerun(states[selected], requested.benchmarks)
+					if err != nil {
+						message = err.Error()
+						break
+					}
+					message = "Created child " + child.Config.RunID + ". Preparing without replay."
+					start(*child, func(ctx context.Context, store *stateStore, child *sessionState) error {
+						if err := prepareRerunSession(ctx, store, child); err != nil {
+							return err
+						}
+						return followManaged(ctx, store, child)
+					})
 				}
 				continue
 			}
@@ -214,7 +227,7 @@ func runTUI(ctx context.Context) error {
 						selected = i
 					}
 				}
-			case 'e', 'p', 'r', 's', 'd', 'g', 'a':
+			case 'e', 'p', 'r', 'R', 's', 'd', 'g', 'a':
 				if cancel != nil {
 					message = "Detach the active operation with c first."
 					continue
@@ -236,7 +249,59 @@ func runTUI(ctx context.Context) error {
 					start(state, prepareSession)
 				case 'g':
 					start(state, func(ctx context.Context, _ *stateStore, s *sessionState) error { return collectSession(ctx, store, s) })
+				case 'R':
+					if state.Kind == "rerun" {
+						message = "Select the storage owner instead."
+						break
+					}
+					if state.Plan == nil || (state.Phase != "completed" && state.Phase != "failed") {
+						message = "Only terminal owners with an ingestion-ready record can be rerun."
+						break
+					}
+					names := make([]string, 0, len(state.Plan.Benchmarks))
+					for _, b := range state.Plan.Benchmarks {
+						names = append(names, b.Name)
+					}
+					selection := strings.Join(names, ",")
+					if _, err := selectedBenchmarks(inputsConfig{Benchmarks: selection}); err != nil {
+						selection, err = promptRerunBenchmarks(tty, state)
+						if err != nil {
+							message = err.Error()
+							break
+						}
+					}
+					candidate := state.Config.Inputs
+					candidate.Benchmarks = selection
+					benchmarks, err := selectedBenchmarks(candidate)
+					if err != nil {
+						message = err.Error()
+						break
+					}
+					allowed := map[string]bool{}
+					for _, d := range state.Plan.Datasets {
+						allowed[d.Name] = true
+					}
+					valid := true
+					for _, b := range benchmarks {
+						if !allowed[b.Dataset] {
+							message = "Dataset not replayed: " + b.Dataset
+							valid = false
+							break
+						}
+					}
+					if !valid {
+						break
+					}
+					tenants := make([]string, 0, len(state.Plan.Datasets))
+					for _, d := range state.Plan.Datasets {
+						tenants = append(tenants, d.Name+"="+d.Tenant)
+					}
+					confirm = &tuiConfirmation{action: 'R', runID: state.Config.RunID, benchmarks: selection, title: "RERUN WITHOUT REPLAY", detail: fmt.Sprintf("Owner %s on %s\nBenchmarks: %s → %s\nTenants: %s\nCommits baseline/comparison/ingest: %.12s / %.12s / %.12s\nNo replay: existing storage reused; no profiles pushed.", state.Config.RunID, state.InstanceID, strings.Join(names, ","), selection, strings.Join(tenants, ","), state.Plan.Baseline.Commit, state.Plan.Comparison.Commit, state.Plan.Ingest.Commit)}
 				case 'r':
+					if state.Kind == "rerun" {
+						start(state, resumeSession)
+						break
+					}
 					if state.Phase == "prepared" || state.Phase == "provisioning" || state.Phase == "uploading" || state.Phase == "ready" {
 						confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "LAUNCH / RESUME", detail: "AWS provisioning incurs charges."}
 					} else {
@@ -252,7 +317,7 @@ func runTUI(ctx context.Context) error {
 					confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "STOP WORKER", detail: "The instance continues billing."}
 					if key == 'd' {
 						confirm.title = "DESTROY INSTANCE"
-						confirm.detail = "Instance data will be lost. Collect results with g first."
+						confirm.detail = "Instance and all child rerun storage will be lost. Collect results with g first."
 					}
 				}
 			}
@@ -265,10 +330,11 @@ func runTUI(ctx context.Context) error {
 }
 
 type tuiConfirmation struct {
-	action byte
-	runID  string
-	title  string
-	detail string
+	action     byte
+	runID      string
+	title      string
+	detail     string
+	benchmarks string
 }
 
 // Decode arrow sequences even when the terminal splits them across reads.
@@ -521,6 +587,9 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 			{"Measurement", terminalText(fmt.Sprintf("%d repetitions · benchtime %s", s.Config.Inputs.Count, s.Config.Inputs.Benchtime), 0)},
 			{"Results", terminalText(filepath.Join(s.Config.Results, s.Config.RunID), 0)},
 		}
+		if s.Kind == "rerun" {
+			details = append(details, table.Row{"Storage owner", terminalText(s.StorageRunID, 0)})
+		}
 		if !s.ExpiresAt.IsZero() {
 			details = append(details, table.Row{"Deadline", s.ExpiresAt.Format(time.RFC3339)})
 		}
@@ -551,7 +620,7 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 	add(" "+message, amber)
 	add(" Logs  "+filepath.Join(root, "controller.log"), dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
-	add(" e edit  p prepare  r resume  h SSH  g collect  c detach", "")
+	add(" e edit  p prepare  r resume  R rerun  h SSH  g collect  c detach", "")
 	add(" s stop     d destroy     a archive     q quit", "")
 	add(" EC2 keeps billing after quit/stop. Use d to destroy resources.", amber)
 	var display strings.Builder
@@ -561,12 +630,9 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 	panelWidth := min(70, max(1, width-1))
 	panelLines := []string(nil)
 	if confirm != nil {
-		panelLines = []string{
-			"CONFIRM: " + confirm.title,
-			"Session: " + confirm.runID,
-			confirm.detail,
-			"Press Y to confirm · any other key cancels",
-		}
+		panelLines = []string{"CONFIRM: " + confirm.title, "Session: " + confirm.runID}
+		panelLines = append(panelLines, strings.Split(confirm.detail, "\n")...)
+		panelLines = append(panelLines, "Press Y to confirm · any other key cancels")
 	}
 	panelTop := max(0, (height-1-len(panelLines)-2)/2)
 	for i := 0; i < height-1 && (i < len(lines) || confirm != nil); i++ {

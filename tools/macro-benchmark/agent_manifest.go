@@ -23,9 +23,11 @@ type manifestFile struct {
 }
 
 type runManifest struct {
-	RunID    string         `json:"run_id"`
-	Deadline time.Time      `json:"deadline"`
-	Files    []manifestFile `json:"files"`
+	RunID        string         `json:"run_id"`
+	Deadline     time.Time      `json:"deadline"`
+	Mode         string         `json:"mode,omitempty"`
+	StorageOwner string         `json:"storage_owner,omitempty"`
+	Files        []manifestFile `json:"files"`
 }
 
 type prepareResult struct {
@@ -36,6 +38,16 @@ type prepareResult struct {
 func validateManifest(m runManifest) error {
 	if !validSessionID(m.RunID) || m.Deadline.IsZero() || len(m.Files) == 0 || len(m.Files) > 10000 {
 		return errors.New("invalid run manifest")
+	}
+	if m.Mode != "" && m.Mode != "fresh" && m.Mode != "rerun" {
+		return errors.New("unknown execution mode")
+	}
+	if m.Mode == "rerun" {
+		if !validSessionID(m.StorageOwner) || m.StorageOwner == m.RunID {
+			return errors.New("invalid storage owner")
+		}
+	} else if m.StorageOwner != "" {
+		return errors.New("fresh run cannot bind owner storage")
 	}
 	seen := map[string]bool{}
 	blobSizes := map[string]int64{}

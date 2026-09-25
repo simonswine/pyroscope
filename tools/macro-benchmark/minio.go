@@ -193,6 +193,30 @@ func waitMinio(ctx context.Context, p *managedProcess, url string) error {
 	}
 }
 
+// Check the bucket without creating or changing it during a rerun.
+func checkBucket(ctx context.Context, endpoint, bucket, access, secret string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, endpoint+"/"+bucket, nil)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256(nil)
+	payloadHash := hex.EncodeToString(hash[:])
+	request.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	credentials := aws.Credentials{AccessKeyID: access, SecretAccessKey: secret}
+	if err := v4.NewSigner().SignHTTP(ctx, credentials, request, payloadHash, "s3", "us-east-1", time.Now()); err != nil {
+		return err
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("existing MinIO bucket unavailable: HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 // Create the fresh bucket through the real S3 API, signed with local credentials.
 // This does not use the AWS credential chain or contact AWS S3.
 func createBucket(ctx context.Context, endpoint, bucket, access, secret string) error {

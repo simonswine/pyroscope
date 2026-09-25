@@ -20,6 +20,15 @@ func (s *stateStore) agentForSession(ctx context.Context, state *sessionState) (
 	id := state.Config.RunID
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
+	// One agent holds the node's control lease. A child shares its owner's
+	// instance; close the previous connection before bootstrapping current code.
+	for other, address := range s.agentAddresses {
+		if other != id && address == host.address {
+			_ = s.agents[other].Close()
+			delete(s.agents, other)
+			delete(s.agentAddresses, other)
+		}
+	}
 	if cached := s.agents[id]; cached != nil {
 		cached.mu.Lock()
 		closed := cached.closed
@@ -55,7 +64,11 @@ func (s *stateStore) agentForSession(ctx context.Context, state *sessionState) (
 		}
 		backoff = min(backoff*2, 10*time.Second)
 	}
-	if _, err := client.Handshake(attachCtx, id, true); err != nil {
+	nodeID := id
+	if state.Kind == "rerun" {
+		nodeID = state.StorageRunID
+	}
+	if _, err := client.Handshake(attachCtx, nodeID, state.Kind != "rerun"); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("agent handshake: %w", err)
 	}

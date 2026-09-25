@@ -37,7 +37,7 @@ func followManaged(ctx context.Context, store *stateStore, state *sessionState) 
 		if time.Now().After(state.ExpiresAt) {
 			return errors.New("deadline_expired: cannot start run")
 		}
-		m, _, err := localRunManifest(state.Config.Bundle, state.Config.RunID, state.ExpiresAt)
+		m, _, err := sessionRunManifest(state)
 		if err != nil {
 			return err
 		}
