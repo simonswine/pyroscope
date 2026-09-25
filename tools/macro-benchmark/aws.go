@@ -126,7 +126,7 @@ func resumeAWS(ctx context.Context, store *stateStore, state *sessionState) erro
 			}
 		}
 	}
-	for _, executable := range []string{"ssh", "scp"} {
+	for _, executable := range []string{"ssh"} {
 		if err := requireExecutable(executable); err != nil {
 			return err
 		}
@@ -249,37 +249,7 @@ func resumeAWS(ctx context.Context, store *stateStore, state *sessionState) erro
 	if address == "" {
 		return errors.New("instance has no reachable IP address")
 	}
-	key, err := filepath.Abs(cfg.KeyPath)
-	if err != nil {
-		return err
-	}
-	host := remoteHost{address: address, key: key, knownHosts: filepath.Join(resultDir, "known_hosts")}
-	sshCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
-	err = host.wait(sshCtx)
-	stop()
-	if err != nil {
-		return err
-	}
-	if !state.Uploaded {
-		if time.Now().After(state.ExpiresAt) {
-			return errors.New("instance deadline expired before upload; destroy resources")
-		}
-		if err := host.ssh(ctx, "sudo cloud-init status --wait && mkdir -p /tmp/benchmark"); err != nil {
-			return err
-		}
-		bundle, err := filepath.Abs(cfg.Bundle)
-		if err != nil {
-			return err
-		}
-		if err := host.copy(ctx, bundle+"/.", "/tmp/benchmark/", true); err != nil {
-			return err
-		}
-		state.Uploaded = true
-		if err := store.save(state); err != nil {
-			return err
-		}
-	}
-	return followRemote(ctx, store, state, host)
+	return followManaged(ctx, store, state)
 }
 
 func instancesForRun(ctx context.Context, client *ec2.Client, runID string) ([]string, error) {

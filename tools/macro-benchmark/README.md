@@ -2,7 +2,8 @@
 
 A single terminal UI owns preparation, temporary AWS resources, remote execution,
 artifact collection, and explicit cleanup. Run from `tools/macro-benchmark` with
-Go 1.25, OpenSSH, and your AWS profile/SSO session configured:
+Go 1.25, OpenSSH, and your AWS profile/SSO session configured. The remote
+Ubuntu image must provide Python 3 for same-connection agent bootstrap:
 
 ```sh
 go build -o macro-benchmark .
@@ -26,6 +27,7 @@ amd64 and uses systemd, not Docker or Kubernetes.
 | `h` | Open an interactive SSH shell on the selected instance; `exit` returns to the TUI |
 | `s` | Stop the remote worker, after confirmation; keep the instance |
 | `d` | Destroy the instance, security group, and imported key pair, after confirmation |
+| `a` | Archive a draft or destroyed session locally so it no longer appears in the list (after confirmation) |
 | `q`, Ctrl-C | Quit, leaving remote work and AWS resources alone |
 
 Launch, stop, and destroy actions display a confirmation popup; press uppercase `Y` to proceed or another key to cancel. Preparation
@@ -35,13 +37,21 @@ source checkout recorded when the session was created. Preparation does not laun
 instances or create AWS resources. Use `r` again to launch a prepared
 session. During attachment, `c` lets you select and work with another session.
 
-SSH uses the session's private key and known-hosts file, and resolves the current
-instance address through AWS with an ownership check. Local operations continue
-while the shell is open. Exit the shell (or use OpenSSH's `~.` escape if the
-connection hangs) to return to the dashboard; this does not stop the worker.
+The controller verifies AWS ownership and uses a single persistent, non-PTY SSH
+connection per attached session. Initial SSH connection failures are retried
+for up to ten minutes while the instance boots; host-key and bootstrap errors
+fail immediately. A small Python helper installs the checksummed agent on that
+connection; bundle upload, worker control, status and
+artifact download then use its framed protocol. The interactive `h` shell opens
+an independent SSH connection and does not stop the worker. Exiting the shell
+(or using OpenSSH's `~.` escape) returns to the dashboard.
 
-The old public `prepare`, `run`, and `keygen` commands are replaced by the TUI.
-Worker/observer commands are an internal remote protocol.
+The TUI is still session-oriented: creating another run on the same EC2 node is
+not yet supported. Existing sessions started using the former `/tmp/benchmark`
+worker are **not migrated** by this version; do not use `r`, `s`, or `g` on those
+sessions until a compatibility adapter is available. The removed public
+`prepare`, `run`, and `keygen` commands are replaced by the TUI. The private
+`agent --stdio` and `worker` commands are not user entry points.
 
 ## Persistent state and resumption
 
@@ -53,6 +63,7 @@ $XDG_STATE_HOME/pyroscope-macro-benchmark/
   controller.lock
   controller.log
   sessions/<session-id>/state.json
+  archived-sessions/<session-id>/state.json  # after explicit archive
   ssh/id_ed25519[.pub]
   bundles/<session-id>/...
   results/<session-id>/...
@@ -62,7 +73,9 @@ Relative `XDG_STATE_HOME` values are ignored per the XDG specification. The root
 is private (0700); snapshots, logs, and private keys are owner-only. One controller
 holds an OS lock, released automatically even if the controller is killed.
 JSON snapshots are versioned, fsynced, and atomically renamed. Corrupt or unknown
-versions fail closed rather than creating replacement state.
+versions fail closed rather than creating replacement state. Archiving moves only
+the local session snapshot to `archived-sessions/`; it keeps bundles and results
+and never stops or destroys AWS resources.
 
 Reopen the TUI and select `r` to reconcile a saved checkpoint with AWS and the
 worker. The list initially shows **saved**, not necessarily current, remote
@@ -72,16 +85,16 @@ resources are rejected. Destroy is also checkpointed and retryable.
 
 On EC2, systemd owns the worker and all its subprocesses, independently of SSH.
 Closing the TUI, losing connectivity, or killing the local controller does **not**
-stop replay or measurement. Reattaching reads the existing worker status rather
-than starting another replay. Completed results download to a temporary name
-before being published locally.
+stop replay or measurement. Reattaching reads the existing per-run worker status over the persistent agent
+connection rather than starting another replay. Completed results download to
+a temporary name, are SHA256-verified and fsynced before being published locally.
 
 A durable remote start marker prevents double ingestion. If the **remote worker
 itself** crashes or the host reboots, it is not automatically replayed into a
 partially populated tenant. Collect any available diagnostics and create a new
 session. This is controller resumption, not mid-replay process checkpointing.
 Preparation and interrupted bundle uploads can be retried before remote work
-starts. Failed/stopped benchmark sessions are not reused for ingestion.
+starts (an interrupted upload restarts from byte zero). Failed/stopped benchmark sessions are not reused for ingestion.
 
 **Billing warning:** quitting, detaching, stopping, and completing a benchmark
 all leave the EC2 instance and EBS volume allocated. The persisted deadline stops
@@ -201,6 +214,14 @@ time), stopping before teardown. The heap profile is written after GC and before
 components stop; it includes process-lifetime allocation samples. `cpu.pprof` and `heap.pprof` cover the **shared frontend/backend runtime**.
 `ingest-cpu.pprof` and `ingest-heap.pprof` cover the **shared write/metastore runtime**
 (including recovery settling). They do not profile the HTTP benchmark client. Very short queries may still produce few or no CPU samples, even with `5x`.
+
+To generate a self-contained, offline comparison report from a collected archive:
+
+```bash
+go run . report ~/.local/state/pyroscope-macro-benchmark/results/<session-id>/results.tar.gz report.html
+```
+
+The report uses vendored benchstat for query results and the vendored Grafana flamegraph viewer for baseline, comparison, and native baseline/comparison diff profiles. Each benchmark has an external profile-type picker and one flamegraph with its own Baseline / Comparison / Diff controls. Diff bar widths combine both original samples; colors compare each stack's share of its respective total (green = lower comparison share, red = higher). CPU profiles include warmup and idle; heap profiles are post-GC in-use snapshots. Differences are descriptive, not statistical tests of profile samples. The viewer uses the upstream `@grafana/flamegraph` v13.2.2 new UI (`enableNewUI`), vendored under `report-ui/upstream/`; it does not include the former legacy viewer. To rebuild embedded assets from `tools/macro-benchmark`, run `cd report-ui && yarn install --immutable && cd ../../../ui && yarn install --immutable && yarn vite build --config report.vite.config.ts`. Commit the updated `report_assets/` alongside the source.
 
 Results are isolated by version and benchmark (`bench.txt` contains all repetitions):
 

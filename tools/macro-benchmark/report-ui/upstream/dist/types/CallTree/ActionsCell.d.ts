@@ -1,0 +1,26 @@
+import { type GetExtraContextMenuButtonsFunction } from '../FlameGraph/FlameGraphContextMenu';
+import { type FlameGraphDataContainer, type LevelItem } from '../FlameGraph/dataTransform';
+import { PaneView, ViewMode } from '../types';
+type ActionsCellProps = {
+    nodeId: string;
+    label: string;
+    itemIndexes: number[];
+    levelItem: LevelItem;
+    hasChildren: boolean;
+    depth: number;
+    parentId: string | undefined;
+    onFocus: (nodeIdOrLabel: string, isLabel: boolean, itemIndexes: number[]) => void;
+    onShowCallers: (label: string) => void;
+    onSearch?: (symbol: string) => void;
+    focusedNodeId: string | undefined;
+    callersNodeLabel: string | undefined;
+    isSearchMatch: boolean;
+    actionsCellClass: string;
+    getExtraContextMenuButtons?: GetExtraContextMenuButtonsFunction;
+    data: FlameGraphDataContainer;
+    viewMode?: ViewMode;
+    paneView?: PaneView;
+    search: string;
+};
+export declare const ActionsCell: import("react").MemoExoticComponent<({ nodeId, label, itemIndexes, levelItem, hasChildren, depth, parentId, onFocus, onShowCallers, onSearch, focusedNodeId, callersNodeLabel, isSearchMatch, actionsCellClass, getExtraContextMenuButtons, data, viewMode, paneView, search, }: ActionsCellProps) => import("react").JSX.Element>;
+export {};

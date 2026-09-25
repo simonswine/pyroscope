@@ -12,8 +12,8 @@ import (
 // The write process includes all three metastores. Reuse its disk state and
 // addresses, not its in-memory caches. MinIO remains running and replay is never
 // repeated. The ingest ref continues to own the storage/metadata format.
-func runBenchmarkGroup(ctx context.Context, inputs inputsConfig, execution benchmarkExecution, idle endpointManifest, clusterEnv []string) (runErr error) {
-	root := filepath.Join(remoteResults, execution.resultDir())
+func runBenchmarkGroup(ctx context.Context, paths RunPaths, inputs inputsConfig, execution benchmarkExecution, idle endpointManifest, clusterEnv []string) (runErr error) {
+	root := filepath.Join(paths.Results, execution.resultDir())
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
@@ -24,12 +24,12 @@ func runBenchmarkGroup(ctx context.Context, inputs inputsConfig, execution bench
 		return err
 	}
 	cpu, heap := filepath.Join(root, "ingest-cpu.pprof"), filepath.Join(root, "ingest-heap.pprof")
-	p, err := startProcess("taskset", []string{"-c", "4-6", filepath.Join(remoteBundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + ingestDataDir, "-endpoints=" + manifest, "-cpu-profile=" + cpu, "-mem-profile=" + heap}, append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(root, "ingest.log"))
+	p, err := startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints=" + manifest, "-cpu-profile=" + cpu, "-mem-profile=" + heap}, append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(root, "ingest.log"))
 	if err != nil {
 		return err
 	}
 	defer func() {
-		runErr = errors.Join(runErr, publishEndpoints(idle))
+		runErr = errors.Join(runErr, publishEndpoints(paths, idle))
 		stopCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		runErr = errors.Join(runErr, p.stop(stopCtx), p.err, checkProfiles(cpu, heap))
@@ -46,15 +46,15 @@ func runBenchmarkGroup(ctx context.Context, inputs inputsConfig, execution bench
 	for name, pid := range idle.Processes {
 		ingest.Processes[name] = pid
 	}
-	if err := publishEndpoints(ingest); err != nil {
+	if err := publishEndpoints(paths, ingest); err != nil {
 		return err
 	}
 	// Recover persisted Raft state and let any outstanding compaction finish
 	// before starting the measured query process.
-	if err := observe(ctx, []string{"-settle"}); err != nil {
+	if err := observePaths(ctx, []string{"-settle", "-output", filepath.Join(paths.Results, "metrics")}, paths); err != nil {
 		return err
 	}
-	return runBenchmarkCluster(ctx, inputs, execution, ingest, clusterEnv)
+	return runBenchmarkCluster(ctx, paths, inputs, execution, ingest, clusterEnv)
 }
 
 func checkProfiles(paths ...string) error {

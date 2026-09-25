@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -31,8 +33,12 @@ type sessionState struct {
 }
 
 type stateStore struct {
-	root string
-	lock *os.File
+	root           string
+	lock           *os.File
+	transportCtx   context.Context
+	agentMu        sync.Mutex
+	agents         map[string]*protocolClient
+	agentAddresses map[string]string
 }
 
 func stateDirectory() (string, error) {
@@ -62,10 +68,17 @@ func openStateStore(root string) (*stateStore, error) {
 		lock.Close()
 		return nil, fmt.Errorf("another controller owns %s: %w", root, err)
 	}
-	return &stateStore{root: root, lock: lock}, nil
+	return &stateStore{root: root, lock: lock, transportCtx: context.Background(), agents: make(map[string]*protocolClient), agentAddresses: make(map[string]string)}, nil
 }
 
-func (s *stateStore) Close() error { return s.lock.Close() }
+func (s *stateStore) Close() error {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	for _, agent := range s.agents {
+		_ = agent.Close()
+	}
+	return s.lock.Close()
+}
 
 // Rename publishes a complete snapshot; fsync makes both content and the rename
 // durable before a caller proceeds to the next external side effect.
@@ -159,6 +172,57 @@ func (s *stateStore) list() ([]sessionState, error) {
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].Config.RunID < states[j].Config.RunID })
 	return states, nil
+}
+
+// archive hides a terminal resource-free session from the active list while
+// retaining its snapshot for audit or manual recovery. It never deletes AWS.
+func (s *stateStore) archive(id string) error {
+	if !validSessionID(id) {
+		return errors.New("invalid session ID")
+	}
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return err
+	}
+	var state sessionState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	if state.Version != stateVersion || state.Config.RunID != id {
+		return errors.New("invalid session snapshot")
+	}
+	switch state.Phase {
+	case "draft":
+		if state.InstanceID != "" || state.GroupID != "" || state.KeyName != "" || state.StartRequested {
+			return errors.New("draft still references AWS resources")
+		}
+	case "destroyed":
+	default:
+		return fmt.Errorf("only draft or destroyed sessions can be archived (phase %q)", state.Phase)
+	}
+	destDir := filepath.Join(s.root, "archived-sessions")
+	if err := os.MkdirAll(destDir, 0700); err != nil {
+		return err
+	}
+	dest := filepath.Join(destDir, id)
+	if _, err := os.Lstat(dest); err == nil {
+		return errors.New("session already archived")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(filepath.Dir(s.path(id)), dest); err != nil {
+		return err
+	}
+	for _, dir := range []string{s.root, filepath.Join(s.root, "sessions"), destDir} {
+		file, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(file.Sync(), file.Close()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *stateStore) create(dataset string) (*sessionState, error) {

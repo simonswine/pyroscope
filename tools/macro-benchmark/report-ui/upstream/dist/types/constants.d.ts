@@ -1,0 +1,15 @@
+export declare const PIXELS_PER_LEVEL = 22;
+export declare const MUTE_THRESHOLD = 10;
+export declare const HIDE_THRESHOLD = 0.5;
+export declare const LABEL_THRESHOLD = 20;
+export declare const BAR_BORDER_WIDTH = 0.5;
+export declare const BAR_TEXT_PADDING_LEFT = 4;
+export declare const GROUP_STRIP_WIDTH = 3;
+export declare const GROUP_STRIP_PADDING = 3;
+export declare const GROUP_STRIP_MARGIN_LEFT = 4;
+export declare const GROUP_TEXT_OFFSET = 2;
+export declare const MIN_WIDTH_TO_SHOW_BOTH_TOPTABLE_AND_FLAMEGRAPH = 800;
+export declare const MIN_WIDTH_FOR_SPLIT_VIEW = 800;
+export declare const MIN_WIDTH_TO_SHOW_SPLIT_PANE_SELECTORS = 1100;
+export declare const TOP_TABLE_COLUMN_WIDTH = 120;
+export declare const FLAMEGRAPH_CONTAINER_HEIGHT = 800;
