@@ -9,11 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 )
-
-const workerDirectory = "/var/lib/macro-benchmark/worker"
 
 type workerState struct {
 	Phase      string
@@ -39,8 +36,7 @@ func loadWorkerState(root string) (workerState, error) {
 	return state, err
 }
 
-// The durable marker is never removed: restarting a service must not replay
-// into an already partially populated tenant. A failed run requires a new session.
+// The durable marker is never removed. A failed ingestion needs a new run ID.
 func runWorker(ctx context.Context, root string, work func(context.Context) error) error {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
@@ -59,6 +55,11 @@ func runWorker(ctx context.Context, root string, work func(context.Context) erro
 	state := workerState{Phase: "completed", FinishedAt: time.Now().UTC()}
 	if err != nil {
 		state.Phase, state.Error = "failed", err.Error()
+		if errors.Is(err, context.Canceled) {
+			if _, stopErr := os.Stat(filepath.Join(filepath.Dir(root), "stop.json")); stopErr == nil {
+				state.Phase = "stopped"
+			}
+		}
 	}
 	return errors.Join(err, atomicJSON(filepath.Join(root, "status.json"), state))
 }
@@ -68,8 +69,13 @@ func worker(ctx context.Context, args []string) error {
 		return errors.New("worker requires the disposable Linux host as root")
 	}
 	flags := flag.NewFlagSet("worker", flag.ContinueOnError)
-	deadline := flags.Int64("deadline", 0, "Absolute instance deadline in Unix seconds")
+	deadline := flags.Int64("deadline", 0, "Absolute execution deadline in Unix seconds")
+	runID := flags.String("run-id", "", "Required run ID")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	paths, err := newRunPaths(agentRoot, *runID)
+	if err != nil {
 		return err
 	}
 	if *deadline <= time.Now().Unix() {
@@ -77,114 +83,25 @@ func worker(ctx context.Context, args []string) error {
 	}
 	ctx, cancel := context.WithDeadline(ctx, time.Unix(*deadline, 0))
 	defer cancel()
-	return runWorker(ctx, workerDirectory, execute)
-}
-
-type workerHost interface {
-	ssh(context.Context, string) error
-	output(context.Context, string) ([]byte, error)
-	copy(context.Context, string, string, bool) error
-}
-
-func remoteWorkerState(ctx context.Context, host workerHost) (workerState, error) {
-	data, err := host.output(ctx, "sudo /tmp/benchmark/macro-benchmark worker-status")
+	lock, err := acquireExecutionLock(agentRoot)
 	if err != nil {
-		return workerState{}, err
+		return err
 	}
-	var state workerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return state, fmt.Errorf("remote worker status: %w", err)
+	defer lock.Close()
+	active, err := unitActive("macro-benchmark.service")
+	if err != nil {
+		return fmt.Errorf("check legacy worker: %w", err)
 	}
-	return state, nil
-}
-
-func followRemote(ctx context.Context, store *stateStore, state *sessionState, host workerHost) error {
-	for {
-		remote, err := remoteWorkerState(ctx, host)
-		if err != nil {
+	if active {
+		return errors.New("node_busy: legacy worker is active")
+	}
+	if _, err := os.Stat(filepath.Join(paths.Root, "stop.json")); err == nil {
+		if err := os.MkdirAll(paths.Worker, 0700); err != nil {
 			return err
 		}
-		switch remote.Phase {
-		case "not-started":
-			if time.Now().After(state.ExpiresAt) {
-				return errors.New("worker deadline expired; refusing to start")
-			}
-			// Submission may have succeeded while SSH lost its response, before
-			// the worker got CPU time to publish its marker.
-			load, err := host.output(ctx, "sudo systemctl show macro-benchmark.service --property=LoadState --value")
-			if err != nil {
-				return err
-			}
-			if strings.TrimSpace(string(load)) == "loaded" {
-				active, err := host.output(ctx, "sudo systemctl show macro-benchmark.service --property=ActiveState --value")
-				if err != nil {
-					return err
-				}
-				if value := strings.TrimSpace(string(active)); value != "active" && value != "activating" {
-					state.Phase = "failed"
-					return errors.New("submitted worker did not start; inspect the remote systemd journal")
-				}
-				if err := waitPoll(ctx, 3*time.Second); err != nil {
-					return err
-				}
-				continue
-			}
-			if strings.TrimSpace(string(load)) != "not-found" {
-				return fmt.Errorf("unexpected worker unit state %q", strings.TrimSpace(string(load)))
-			}
-			state.StartRequested = true
-			state.Phase = "starting"
-			if err := store.save(state); err != nil {
-				return err
-			}
-			// systemd owns the process and its children, not the SSH connection.
-			// A lost start response is reconciled on the next resume. The worker's
-			// exclusive marker independently prevents double ingestion.
-			command := fmt.Sprintf("sudo systemd-run --unit=macro-benchmark --property=Type=exec --property=RemainAfterExit=yes --property=TimeoutStopSec=240 --property=KillMode=mixed /tmp/benchmark/macro-benchmark worker -deadline %d", state.ExpiresAt.Unix())
-			if err := host.ssh(ctx, command); err != nil {
-				return fmt.Errorf("submit worker (resume to reconcile): %w", err)
-			}
-		case "running":
-			active, err := host.output(ctx, "sudo systemctl show macro-benchmark.service --property=ActiveState --value")
-			if err != nil {
-				return err
-			}
-			if value := strings.TrimSpace(string(active)); value != "active" && value != "activating" && value != "deactivating" {
-				// The worker can publish its final status between our two reads.
-				latest, err := remoteWorkerState(ctx, host)
-				if err != nil {
-					return err
-				}
-				if latest.Phase == "completed" || latest.Phase == "failed" {
-					continue
-				}
-				state.Phase = "interrupted"
-				return errors.New("worker is no longer active; refusing to replay automatically (collect diagnostics or destroy)")
-			}
-			state.Phase = "running"
-			if err := store.save(state); err != nil {
-				return err
-			}
-		case "completed", "failed":
-			state.Phase, state.Error = remote.Phase, remote.Error
-			if err := store.save(state); err != nil {
-				return err
-			}
-			if err := collectFromHost(ctx, state, host); err != nil {
-				return err
-			}
-			if remote.Phase == "failed" {
-				return errors.New(remote.Error)
-			}
-			return nil
-		case "interrupted":
-			state.Phase = "interrupted"
-			return errors.New(remote.Error)
-		default:
-			return fmt.Errorf("unknown remote worker phase %q", remote.Phase)
-		}
-		if err := waitPoll(ctx, 3*time.Second); err != nil {
-			return err
-		}
+		return atomicJSON(filepath.Join(paths.Worker, "status.json"), workerState{Phase: "stopped", FinishedAt: time.Now().UTC()})
+	} else if !os.IsNotExist(err) {
+		return err
 	}
+	return runWorker(ctx, paths.Worker, func(ctx context.Context) error { return executeWithPaths(ctx, paths) })
 }

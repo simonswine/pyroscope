@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -77,43 +74,4 @@ func (h remoteHost) options() []string {
 	return []string{"-i", h.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
 		"-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + h.knownHosts}
-}
-
-func (h remoteHost) ssh(ctx context.Context, command string) error {
-	args := append(h.options(), "ubuntu@"+h.address, command)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
-}
-
-func (h remoteHost) output(ctx context.Context, command string) ([]byte, error) {
-	args := append(h.options(), "ubuntu@"+h.address, command)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stderr = os.Stderr
-	return cmd.Output()
-}
-
-func (h remoteHost) copy(ctx context.Context, source, dest string, upload bool) error {
-	if upload {
-		dest = "ubuntu@" + h.address + ":" + dest
-	} else {
-		source = "ubuntu@" + h.address + ":" + source
-	}
-	args := append(h.options(), "-r", source, dest)
-	cmd := exec.CommandContext(ctx, "scp", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
-}
-
-func (h remoteHost) wait(ctx context.Context) error {
-	for {
-		if err := h.ssh(ctx, "true"); err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for SSH: %w", ctx.Err())
-		case <-time.After(5 * time.Second):
-		}
-	}
 }

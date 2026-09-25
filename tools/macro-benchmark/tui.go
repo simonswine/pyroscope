@@ -13,6 +13,10 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
+
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -34,6 +38,7 @@ func runTUI(ctx context.Context) error {
 		return err
 	}
 	defer store.Close()
+	store.transportCtx = ctx
 	if _, err := store.list(); err != nil {
 		return err
 	}
@@ -55,6 +60,8 @@ func runTUI(ctx context.Context) error {
 	defer fmt.Fprint(tty, "\x1b[?25h\x1b[?1049l")
 
 	selected := 0
+	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	lastSpin := time.Now()
 	message := "Saved checkpoints shown. r reconciles with AWS; it never replays a started worker."
 	var confirm *tuiConfirmation
 	var keys tuiKeys
@@ -98,7 +105,11 @@ func runTUI(ctx context.Context) error {
 			selected = 0
 		}
 		width, height := terminalSize(tty)
-		_, _ = io.WriteString(tty, tuiDisplayWithConfirmation(width, height, root, states, selected, message, cancel != nil, confirm))
+		if time.Since(lastSpin) >= spin.Spinner.FPS {
+			spin, _ = spin.Update(spin.Tick())
+			lastSpin = time.Now()
+		}
+		_, _ = io.WriteString(tty, tuiDisplayWithConfirmationAndSpinner(width, height, root, states, selected, message, cancel != nil, confirm, spin.View()))
 		// Darwin's poll reports POLLNVAL for /dev/tty; select works on both
 		// macOS controllers and Linux without a permanently blocked reader.
 		var readable unix.FdSet
@@ -141,6 +152,12 @@ func runTUI(ctx context.Context) error {
 				switch requested.action {
 				case 'd':
 					start(states[selected], destroySession)
+				case 'a':
+					if err := store.archive(requested.runID); err != nil {
+						message = "Archive: " + err.Error()
+					} else {
+						message = "Session archived locally. AWS resources were not changed."
+					}
 				case 's':
 					start(states[selected], stopSession)
 				case 'r':
@@ -197,7 +214,7 @@ func runTUI(ctx context.Context) error {
 						selected = i
 					}
 				}
-			case 'e', 'p', 'r', 's', 'd', 'g':
+			case 'e', 'p', 'r', 's', 'd', 'g', 'a':
 				if cancel != nil {
 					message = "Detach the active operation with c first."
 					continue
@@ -218,12 +235,18 @@ func runTUI(ctx context.Context) error {
 				case 'p':
 					start(state, prepareSession)
 				case 'g':
-					start(state, func(ctx context.Context, _ *stateStore, s *sessionState) error { return collectSession(ctx, s) })
+					start(state, func(ctx context.Context, _ *stateStore, s *sessionState) error { return collectSession(ctx, store, s) })
 				case 'r':
-					if state.Phase == "prepared" || state.Phase == "provisioning" {
+					if state.Phase == "prepared" || state.Phase == "provisioning" || state.Phase == "uploading" || state.Phase == "ready" {
 						confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "LAUNCH / RESUME", detail: "AWS provisioning incurs charges."}
 					} else {
 						start(state, resumeSession)
+					}
+				case 'a':
+					if state.Phase != "draft" && state.Phase != "destroyed" {
+						message = "Only draft or destroyed sessions can be archived."
+					} else {
+						confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "ARCHIVE SESSION", detail: "Hide this local checkpoint; AWS is not modified."}
 					}
 				case 's', 'd':
 					confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "STOP WORKER", detail: "The instance continues billing."}
@@ -365,46 +388,119 @@ func tuiDisplay(width, height int, root string, states []sessionState, selected 
 }
 
 func tuiDisplayWithConfirmation(width, height int, root string, states []sessionState, selected int, message string, busy bool, confirm *tuiConfirmation) string {
+	return tuiDisplayWithConfirmationAndSpinner(width, height, root, states, selected, message, busy, confirm, spinner.MiniDot.Frames[0])
+}
+
+func activePhase(phase string) bool {
+	switch phase {
+	case "preparing", "provisioning", "uploading", "starting", "running", "stopping", "destroying":
+		return true
+	default:
+		return false
+	}
+}
+
+// Use black text on light backgrounds for every phase badge. Explicit
+// background colours keep the labels readable across terminal themes.
+func phaseBadgeStyle(phase string) string {
+	switch phase {
+	case "failed", "interrupted", "error", "destroying":
+		return "\x1b[38;5;16;48;5;210m" // black on light red
+	case "completed", "prepared", "ready":
+		return "\x1b[38;5;16;48;5;157m" // black on light green
+	case "running":
+		return "\x1b[38;5;16;48;5;159m" // black on light cyan
+	case "provisioning":
+		return "\x1b[38;5;16;48;5;153m" // black on light blue
+	case "uploading", "stopping":
+		return "\x1b[38;5;16;48;5;183m" // black on light purple
+	case "draft", "destroyed", "stopped":
+		return "\x1b[38;5;16;48;5;252m" // black on light grey
+	default:
+		return "\x1b[38;5;16;48;5;229m" // black on light yellow
+	}
+}
+
+func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states []sessionState, selected int, message string, busy bool, confirm *tuiConfirmation, frame string) string {
 	const (
 		reset = "\x1b[0m"
 		dim   = "\x1b[2m"
 		cyan  = "\x1b[1;36m"
 		amber = "\x1b[33m"
 	)
-	type row struct{ text, style string }
+	type row struct {
+		text, style string
+		trusted     bool
+	}
 	var lines []row
-	add := func(text, style string) { lines = append(lines, row{text, style}) }
+	add := func(text, style string) { lines = append(lines, row{text: text, style: style}) }
+	addTableLine := func(text string) { lines = append(lines, row{text: text, trusted: true}) }
 	add(" PYROSCOPE  /  MACRO BENCHMARK", cyan)
 	add(" Persistent sessions · AWS workers · Profiling at scale", dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
 	add(" NEW SESSION   n configure · all benchmarks selected by default", "")
 	add(fmt.Sprintf(" SESSIONS (%d)   ↑/↓ or j/k select · saved checkpoints; r refreshes", len(states)), cyan)
 	selected = max(0, min(selected, len(states)-1))
-	first := 0
-	visible := max(1, height-21)
-	if selected >= visible {
-		first = selected - visible + 1
-	}
-	for i := first; i < len(states) && i < first+visible; i++ {
-		state := states[i]
-		mark, style := "  ", ""
-		switch state.Phase {
-		case "failed", "error":
-			style = "\x1b[31m"
-		case "completed", "prepared":
-			style = "\x1b[32m"
-		case "running", "provisioning":
-			style = amber
+	if len(states) > 0 {
+		// Bubbles owns the table's cursor, viewport and column truncation. The
+		// rest of the existing TUI (confirmation and input form) stays unchanged.
+		available := max(4, width-2)
+		phaseWidth := max(1, min(16, available/4))
+		benchWidth := max(1, min(7, available/8))
+		ageWidth := max(1, min(13, available/5))
+		idWidth := max(1, available-phaseWidth-benchWidth-ageWidth)
+		columns := []table.Column{{Title: "PHASE", Width: phaseWidth}, {Title: "RUN ID", Width: idWidth}, {Title: "BENCH", Width: benchWidth}, {Title: "UPDATED", Width: ageWidth}}
+		rows := make([]table.Row, 0, len(states))
+		for i, state := range states {
+			benchmarks, _ := selectedBenchmarks(state.Config.Inputs)
+			phase := "  " + state.Phase
+			if activePhase(state.Phase) {
+				phase = frame + " " + state.Phase
+			}
+			if i == selected {
+				phase = "› " + phase
+			}
+			rows = append(rows, table.Row{terminalText(phase, 0), terminalText(state.Config.RunID, 0), fmt.Sprintf("%d", len(benchmarks)), terminalText(timeAgo(state.UpdatedAt), 0)})
 		}
-		if i == selected {
-			mark, style = "› ", "\x1b[1;30;46m"
+		view := table.New(table.WithColumns(columns), table.WithRows(rows), table.WithHeight(min(len(rows)+1, max(2, height-25))), table.WithWidth(available))
+		styles := table.DefaultStyles()
+		styles.Header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+		styles.Cell = lipgloss.NewStyle()
+		// Keep the selected row light with black text; phase badges use the
+		// same foreground, so neither selection nor terminal themes wash it out.
+		styles.Selected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#d6dce7"))
+		view.SetStyles(styles)
+		view.MoveDown(selected)
+		for _, line := range strings.Split(view.View(), "\n") {
+			// Apply the badge after Bubbles has aligned and truncated columns;
+			// ANSI escapes inside a cell would confuse runewidth. Colour the
+			// spinner and existing padding too, without widening the row.
+			for _, state := range states {
+				if state.Phase == "" {
+					continue
+				}
+				at := strings.Index(line, state.Phase)
+				if at < 0 || lipgloss.Width(line[:at]) >= phaseWidth {
+					continue
+				}
+				start := at
+				if activePhase(state.Phase) && frame != "" {
+					if spinnerAt := strings.LastIndex(line[:at], frame); spinnerAt >= 0 && lipgloss.Width(line[:spinnerAt]) < phaseWidth {
+						start = spinnerAt
+					}
+				}
+				if start > 0 && line[start-1] == ' ' {
+					start--
+				}
+				end := at + len(state.Phase)
+				if end < len(line) && line[end] == ' ' {
+					end++
+				}
+				line = line[:start] + phaseBadgeStyle(state.Phase) + line[start:end] + reset + line[end:]
+				break
+			}
+			addTableLine(line)
 		}
-		benchmarks, _ := selectedBenchmarks(state.Config.Inputs)
-		ago := timeAgo(state.UpdatedAt)
-		if ago != "" {
-			ago = "  " + ago
-		}
-		add(fmt.Sprintf("%s%-13s %s  /  %d benchmarks%s", mark, state.Phase, state.Config.RunID, len(benchmarks), ago), style)
 	}
 	if len(states) == 0 {
 		add(" No sessions yet. Press n to select benchmarks and Git refs.", dim)
@@ -413,19 +509,37 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 		s := states[selected]
 		add("", "")
 		add(" SELECTED SESSION", cyan)
-		add(" Region    "+s.Config.Region+"    Instance  "+s.InstanceID, "")
-		add(" Refs      "+s.Config.Inputs.BaselineRef+" → "+s.Config.Inputs.ComparisonRef, "")
 		ingest := s.Config.Inputs.IngestRef
 		if ingest == "" {
 			ingest = s.Config.Inputs.ComparisonRef
 		}
-		add(fmt.Sprintf(" Ingest    %s · repetitions %d · benchtime %s", ingest, s.Config.Inputs.Count, s.Config.Inputs.Benchtime), "")
-		add(" Results   "+filepath.Join(s.Config.Results, s.Config.RunID), dim)
+		details := []table.Row{
+			{"Region", terminalText(s.Config.Region, 0)},
+			{"Instance", terminalText(s.InstanceID, 0)},
+			{"Refs", terminalText(s.Config.Inputs.BaselineRef+" → "+s.Config.Inputs.ComparisonRef, 0)},
+			{"Ingest", terminalText(ingest, 0)},
+			{"Measurement", terminalText(fmt.Sprintf("%d repetitions · benchtime %s", s.Config.Inputs.Count, s.Config.Inputs.Benchtime), 0)},
+			{"Results", terminalText(filepath.Join(s.Config.Results, s.Config.RunID), 0)},
+		}
 		if !s.ExpiresAt.IsZero() {
-			add(" Deadline  "+s.ExpiresAt.Format(time.RFC3339), amber)
+			details = append(details, table.Row{"Deadline", s.ExpiresAt.Format(time.RFC3339)})
 		}
 		if s.Error != "" {
-			add(" Error     "+s.Error, "\x1b[31m")
+			details = append(details, table.Row{"Error", terminalText(s.Error, 0)})
+		}
+		fieldWidth := min(15, max(1, (width-2)/3))
+		detailTable := table.New(table.WithColumns([]table.Column{
+			{Title: "FIELD", Width: fieldWidth},
+			{Title: "VALUE", Width: max(1, width-2-fieldWidth)},
+		}), table.WithRows(details), table.WithHeight(len(details)+1), table.WithWidth(max(2, width-2)))
+		detailStyles := table.DefaultStyles()
+		lightBg := lipgloss.Color("#e5e7eb")
+		detailStyles.Header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lightBg)
+		detailStyles.Cell = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lightBg)
+		detailStyles.Selected = detailStyles.Cell // Read-only table; no selected detail row.
+		detailTable.SetStyles(detailStyles)
+		for _, line := range strings.Split(detailTable.View(), "\n") {
+			addTableLine(line)
 		}
 	}
 	add("", "")
@@ -438,7 +552,7 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 	add(" Logs  "+filepath.Join(root, "controller.log"), dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
 	add(" e edit  p prepare  r resume  h SSH  g collect  c detach", "")
-	add(" s stop     d destroy     q quit", "")
+	add(" s stop     d destroy     a archive     q quit", "")
 	add(" EC2 keeps billing after quit/stop. Use d to destroy resources.", amber)
 	var display strings.Builder
 	display.WriteString("\x1b[H\x1b[2J")
@@ -462,9 +576,9 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 		}
 		if confirm != nil && i >= panelTop && i < panelTop+len(panelLines)+2 {
 			const (
-				popupBg    = "\x1b[48;5;235m" // dark grey background
-				popupFg    = "\x1b[38;5;255m" // near-white text
-				popupBold  = "\x1b[1m"
+				popupBg     = "\x1b[48;5;235m" // dark grey background
+				popupFg     = "\x1b[38;5;255m" // near-white text
+				popupBold   = "\x1b[1m"
 				popupBorder = "\x1b[38;5;214m" // amber border
 			)
 			padding := strings.Repeat(" ", max(0, (width-1-panelWidth)/2))
@@ -488,7 +602,11 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 			continue
 		}
 		display.WriteString(line.style)
-		display.WriteString(terminalText(line.text, max(1, width-1)))
+		if line.trusted {
+			display.WriteString(line.text)
+		} else {
+			display.WriteString(terminalText(line.text, max(1, width-1)))
+		}
 		display.WriteString(reset + "\r\n")
 	}
 	return display.String()

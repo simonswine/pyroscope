@@ -61,7 +61,7 @@ func TestRunPlanDefaultAndOverride(t *testing.T) {
 }
 
 func TestBenchmarkSelection(t *testing.T) {
-	for _, selection := range []string{"not-a-benchmark", "all-series,all-series", ",", "all-series,"} {
+	for _, selection := range []string{"not-a-benchmark", "series,series", ",", "all-series,"} {
 		if _, err := selectedBenchmarks(inputsConfig{Benchmarks: selection}); err == nil {
 			t.Fatalf("accepted %q", selection)
 		}

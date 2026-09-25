@@ -1,0 +1,26 @@
+import { type GetExtraContextMenuButtonsFunction } from './FlameGraph/FlameGraphContextMenu';
+import { type FlameGraphDataContainer } from './FlameGraph/dataTransform';
+import { PaneView, type ViewMode } from './types';
+type FlameGraphPaneProps = {
+    paneView: PaneView;
+    dataContainer: FlameGraphDataContainer;
+    search: string;
+    matchedLabels: Set<string> | undefined;
+    onTableSymbolClick?: (symbol: string) => void;
+    onTextAlignSelected?: (align: string) => void;
+    onTableSort?: (sort: string) => void;
+    showFlameGraphOnly?: boolean;
+    disableCollapsing?: boolean;
+    getExtraContextMenuButtons?: GetExtraContextMenuButtonsFunction;
+    viewMode: ViewMode;
+    paneViewForContextMenu: PaneView;
+    setSearch: (search: string) => void;
+    resetKey?: number;
+    keepFocusOnDataChange?: boolean;
+    focusedItemIndexes?: number[];
+    setFocusedItemIndexes?: (itemIndexes: number[] | undefined) => void;
+    sharedSandwichItem?: string;
+    setSharedSandwichItem?: (item: string | undefined) => void;
+};
+declare const FlameGraphPane: ({ paneView, dataContainer, search, matchedLabels, onTableSymbolClick, onTextAlignSelected, onTableSort, showFlameGraphOnly, disableCollapsing, getExtraContextMenuButtons, viewMode, paneViewForContextMenu, setSearch, resetKey, keepFocusOnDataChange, focusedItemIndexes, setFocusedItemIndexes, sharedSandwichItem, setSharedSandwichItem, }: FlameGraphPaneProps) => import("react").JSX.Element;
+export default FlameGraphPane;

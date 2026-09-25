@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
-	"time"
 )
 
 func main() {
@@ -25,26 +24,31 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return runTUI(ctx)
 	}
-	// These commands are a private protocol for the remote worker and observer,
-	// not alternative controller entry points. All user actions live in the TUI.
+	// The report command works locally on a downloaded archive. Agent and worker
+	// remain private remote protocol commands; interactive actions live in the TUI.
 	switch args[0] {
-	case "worker":
-		return worker(ctx, args[1:])
-	case "worker-status":
-		state, err := loadWorkerState(workerDirectory)
+	case "agent":
+		if len(args) != 2 || args[1] != "--stdio" {
+			return fmt.Errorf("agent requires --stdio")
+		}
+		if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+			return fmt.Errorf("agent requires root on the disposable Linux host")
+		}
+		server, err := openAgentServer(agentRoot)
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(state)
-	case "execute":
-		return execute(ctx)
-	case "observe":
-		return observe(ctx, args[1:])
-	case "now-ms":
-		fmt.Println(time.Now().UnixMilli())
-		return nil
+		defer server.Close()
+		return server.serveAgent(ctx, os.Stdin, os.Stdout)
+	case "worker":
+		return worker(ctx, args[1:])
+	case "report":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: macro-benchmark report RESULTS.tar.gz OUTPUT.html")
+		}
+		return generateReport(args[1], args[2])
 	case "-h", "--help":
-		fmt.Println("Usage: macro-benchmark\nInteractive controller. State: $XDG_STATE_HOME/pyroscope-macro-benchmark (default ~/.local/state/pyroscope-macro-benchmark).")
+		fmt.Println("Usage: macro-benchmark [report RESULTS.tar.gz OUTPUT.html]\nInteractive controller. State: $XDG_STATE_HOME/pyroscope-macro-benchmark (default ~/.local/state/pyroscope-macro-benchmark).")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q; launch macro-benchmark without arguments to open the TUI", args[0])

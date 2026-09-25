@@ -2,7 +2,6 @@
 package benchmark
 
 import (
-	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/all-series"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/checkout-service"
 	"github.com/grafana/pyroscope/macro-benchmark/benchmark/internal/registry"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/label-names"
@@ -11,6 +10,7 @@ import (
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-pprof"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-tree"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merged-flamegraph"
+	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/series"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/series-by-service"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/series-total"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/service-label-values"

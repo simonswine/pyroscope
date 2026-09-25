@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -215,31 +214,15 @@ func sessionHost(ctx context.Context, state *sessionState) (remoteHost, error) {
 	return remoteHost{address: address, key: state.Config.KeyPath, knownHosts: filepath.Join(state.Config.Results, state.Config.RunID, "known_hosts")}, nil
 }
 
-func collectSession(ctx context.Context, state *sessionState) error {
-	host, err := sessionHost(ctx, state)
-	if err != nil {
-		return err
-	}
-	return collectFromHost(ctx, state, host)
-}
-
-func collectFromHost(ctx context.Context, state *sessionState, host workerHost) error {
-	dest := filepath.Join(state.Config.Results, state.Config.RunID, "results.tar.gz")
-	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
-		return err
-	}
-	// Do not publish a partial download if the TUI disconnects during transfer.
-	if err := host.copy(ctx, "/tmp/results.tar.gz", dest+".partial", false); err != nil {
-		return err
-	}
-	return os.Rename(dest+".partial", dest)
+func collectSession(ctx context.Context, store *stateStore, state *sessionState) error {
+	return collectManaged(ctx, store, state)
 }
 
 func stopSession(ctx context.Context, store *stateStore, state *sessionState) error {
 	if !state.StartRequested {
 		return errors.New("remote worker has not been submitted")
 	}
-	host, err := sessionHost(ctx, state)
+	client, err := store.agentForSession(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -247,10 +230,12 @@ func stopSession(ctx context.Context, store *stateStore, state *sessionState) er
 	if err := store.save(state); err != nil {
 		return err
 	}
-	if err := host.ssh(ctx, "sudo systemctl stop macro-benchmark.service"); err != nil {
+	var run agentRunSummary
+	if err := client.Request(ctx, "stop_run", state.Config.RunID, nil, &run); err != nil {
 		return err
 	}
-	state.Phase = "stopped"
+	state.Phase = run.Phase
+	state.Error = run.Error
 	return store.save(state)
 }
 
@@ -314,8 +299,8 @@ func resumeSession(ctx context.Context, store *stateStore, state *sessionState) 
 	case "stopping":
 		return stopSession(ctx, store, state)
 	case "completed", "failed", "stopped", "interrupted":
-		return collectSession(ctx, state)
-	case "prepared", "provisioning", "starting", "running":
+		return collectSession(ctx, store, state)
+	case "prepared", "provisioning", "uploading", "ready", "starting", "running":
 		return resumeAWS(ctx, store, state)
 	default:
 		return fmt.Errorf("unknown session phase %q", state.Phase)

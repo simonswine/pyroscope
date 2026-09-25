@@ -89,9 +89,9 @@ func getMetrics(ctx context.Context, url string) ([]byte, error) {
 	return data, nil
 }
 
-func snapshot(ctx context.Context, root string) ([]string, error) {
+func snapshot(ctx context.Context, root, bundle string) ([]string, error) {
 	var endpoints endpointManifest
-	if err := readYAML(filepath.Join(remoteBundle, "endpoints.yaml"), &endpoints); err != nil {
+	if err := readYAML(filepath.Join(bundle, "endpoints.yaml"), &endpoints); err != nil {
 		return nil, err
 	}
 	dest := filepath.Join(root, strconv.FormatInt(time.Now().UnixNano(), 10))
@@ -142,10 +142,10 @@ func snapshot(ctx context.Context, root string) ([]string, error) {
 	return stores, nil
 }
 
-func observe(ctx context.Context, args []string) error {
+func observePaths(ctx context.Context, args []string, paths RunPaths) error {
 	f := flag.NewFlagSet("observe", flag.ContinueOnError)
 	settle := f.Bool("settle", false, "Require a quiet compaction window")
-	output := f.String("output", "/tmp/results/metrics", "Output directory")
+	output := f.String("output", filepath.Join(paths.Results, "metrics"), "Output directory")
 	quiet := f.Duration("quiet", time.Minute, "Required quiet duration")
 	timeout := f.Duration("timeout", 30*time.Minute, "Collection deadline")
 	if err := f.Parse(args); err != nil {
@@ -158,7 +158,7 @@ func observe(ctx context.Context, args []string) error {
 	defer cancel()
 	var quietSince time.Time
 	for {
-		stores, err := snapshot(ctx, *output)
+		stores, err := snapshot(ctx, *output, paths.Bundle)
 		idle := err == nil && len(stores) == 3
 		if err != nil {
 			log.Printf("metrics collection: %v", err)
