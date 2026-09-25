@@ -50,8 +50,19 @@ func localRunManifest(root, id string, deadline time.Time) (runManifest, map[str
 	return m, sources, nil
 }
 
-func uploadRunBundle(ctx context.Context, client *protocolClient, state *sessionState) (string, error) {
+func sessionRunManifest(state *sessionState) (runManifest, map[string]string, error) {
 	m, sources, err := localRunManifest(state.Config.Bundle, state.Config.RunID, state.ExpiresAt)
+	if err != nil {
+		return m, sources, err
+	}
+	if state.Kind == "rerun" {
+		m.Mode, m.StorageOwner = "rerun", state.StorageRunID
+	}
+	return m, sources, validateManifest(m)
+}
+
+func uploadRunBundle(ctx context.Context, client *protocolClient, state *sessionState) (string, error) {
+	m, sources, err := sessionRunManifest(state)
 	if err != nil {
 		return "", err
 	}

@@ -1,6 +1,6 @@
 # Rerun benchmarks on an existing instance and replay
 
-Status: design proposal; not implemented.
+Status: partial implementation. New owners persist credentials and ingestion readiness; the controller, agent, worker, and TUI have a rerun path, but no EC2 end-to-end validation has been performed. Legacy runs without the required records remain ineligible. Child deletion and legacy recovery are not implemented. This document describes the target behavior, not a claim that all acceptance criteria are met.
 
 ## Goal and scope
 
@@ -55,9 +55,22 @@ Rerun executions use original `replayWindow` start/end and tenant for each selec
 - Integration test using a small fixture: run ingest once, deliberately fail a query benchmark, rerun a newly compiled benchmark against the same owner on the same node, verify unchanged tenant IDs/windows and push counts, valid baseline/comparison artifacts and separate archives; retry attachment after disconnect; ensure no replay invocation or source artifact modification. Also test a completed parent.
 - Acceptance: TUI `R` on the previously failed, query-stage session builds the new `series` benchmark, runs its sub-benchmarks on the original `full-tenant` replay without downloading/pushing that replay, and produces a new report while the old report and session remain available.
 
+## Open decisions and invariants
+
+Resolve these before implementation; default to rejection when evidence or ownership is ambiguous.
+
+- **Storage credentials:** the current MinIO credentials are random and may not be recoverable after the original worker exits. Determine whether they can be safely persisted for new runs and whether legacy runs have a verifiable recovery path. If not, mark those sources ineligible; never guess credentials or reinitialize the data directory.
+- **Owner lifecycle:** keep the original instance and volume as the sole storage owner. Child runs must not independently provision, extend, or destroy AWS resources. Define how a child deadline is bounded by the owner's actual availability without inheriting an expired session deadline.
+- **Format compatibility:** verify that the preserved MinIO data, metastore, and ingest binaries can be reopened by the selected execution. A mismatch is an eligibility failure, not permission to migrate or rewrite shared storage during measurement.
+- **Evidence and migration:** define canonical manifest serialization and digest inputs, fsync/rename durability, session snapshot migration, and precise legacy log/artifact evidence. Any absent, corrupt, conflicting, or unverifiable evidence rejects the rerun with an actionable diagnostic.
+- **Concurrency and deletion:** the node lock must cover the final owner/readiness/path checks and opening storage. Destruction of an owner must account for all children and be serialized against rerun start; generic cleanup must never infer shared-resource ownership from a child.
+- **Comparability:** record that compaction or other permitted storage evolution between measurements can affect results. Do not promise bit-for-bit equivalence to the original run.
+
 ## Implementation order
 
-1. Readiness record and tests for new/legacy owner runs; path and manifest validation.
-2. Separate storage-owner paths from child output paths; rerun-only worker execution and integration test.
-3. Child session persistence and agent/controller lifecycle; ownership/destruction semantics.
-4. TUI confirmation/selection, documentation, and end-to-end validation on an existing benchmark-failed session.
+1. Readiness record, credential/recovery feasibility, and tests for new/legacy owner runs; canonical path and manifest validation.
+2. Separate storage-owner paths from child output paths; rerun-only worker execution and integration test proving replay is unreachable.
+3. Child session persistence and agent/controller lifecycle; ownership, concurrency, cancellation, and destruction semantics.
+4. TUI confirmation/selection, documentation, and end-to-end validation on completed and benchmark-failed sessions.
+
+Each stage must preserve existing fresh-run behavior. Do not expose the TUI action until worker-side validation, durable ownership state, and child-safe cleanup are in place.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -136,4 +137,34 @@ func writeYAML(path string, value any) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+func atomicYAML(path string, value any) error {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".manifest-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
 }

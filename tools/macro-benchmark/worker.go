@@ -71,15 +71,42 @@ func worker(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("worker", flag.ContinueOnError)
 	deadline := flags.Int64("deadline", 0, "Absolute execution deadline in Unix seconds")
 	runID := flags.String("run-id", "", "Required run ID")
+	mode := flags.String("mode", "fresh", "Execution mode: fresh or rerun")
+	ownerID := flags.String("storage-owner", "", "Required storage owner for rerun mode")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	paths, err := newRunPaths(agentRoot, *runID)
+	if *mode != "fresh" && *mode != "rerun" {
+		return fmt.Errorf("unknown worker mode %q", *mode)
+	}
+	var paths RunPaths
+	var err error
+	if *mode == "rerun" {
+		paths, err = newRerunPaths(agentRoot, *runID, *ownerID)
+	} else if *ownerID != "" {
+		return errors.New("fresh worker cannot specify a storage owner")
+	} else {
+		paths, err = newRunPaths(agentRoot, *runID)
+	}
 	if err != nil {
 		return err
 	}
 	if *deadline <= time.Now().Unix() {
 		return errors.New("worker deadline has expired")
+	}
+	manifestData, err := os.ReadFile(filepath.Join(paths.Root, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	var manifest runManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return err
+	}
+	if err := validateManifest(manifest); err != nil {
+		return err
+	}
+	if manifest.RunID != *runID || manifest.Deadline.Unix() != *deadline || (manifest.Mode == "rerun") != paths.Rerun || manifest.StorageOwner != *ownerID {
+		return errors.New("worker flags do not match run manifest")
 	}
 	ctx, cancel := context.WithDeadline(ctx, time.Unix(*deadline, 0))
 	defer cancel()
@@ -103,5 +130,10 @@ func worker(ctx context.Context, args []string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return runWorker(ctx, paths.Worker, func(ctx context.Context) error { return executeWithPaths(ctx, paths) })
+	return runWorker(ctx, paths.Worker, func(ctx context.Context) error {
+		if paths.Rerun {
+			return executeRerun(ctx, paths)
+		}
+		return executeWithPaths(ctx, paths)
+	})
 }

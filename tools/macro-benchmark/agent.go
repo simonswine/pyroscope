@@ -106,7 +106,7 @@ func (s *agentServer) hello(h agentHello) (agentGreeting, error) {
 	default:
 		return agentGreeting{}, err
 	}
-	return agentGreeting{Version: protocolVersion, Node: s.node, Capabilities: []string{"describe_node", "list_runs", "get_run", "upload_blob", "prepare_run", "finalize_run", "start_run", "stop_run", "get_artifacts", "download_artifact"}, MaxHeader: maxFrameHeader, MaxPayload: maxFramePayload}, nil
+	return agentGreeting{Version: protocolVersion, Node: s.node, Capabilities: []string{"describe_node", "list_runs", "get_run", "rerun_source", "upload_blob", "prepare_run", "finalize_run", "start_run", "stop_run", "get_artifacts", "download_artifact"}, MaxHeader: maxFrameHeader, MaxPayload: maxFramePayload}, nil
 }
 
 type agentRunSummary struct {
@@ -261,6 +261,9 @@ func (s *agentServer) handle(f protocolFrame) protocolFrame {
 	case "get_run":
 		run, err := s.runSummary(f.Header.RunID)
 		return respond(run, err)
+	case "rerun_source":
+		source, err := s.rerunSource(f.Header.RunID)
+		return respond(source, err)
 	case "prepare_run":
 		var manifest runManifest
 		if err := json.Unmarshal(f.Header.Body, &manifest); err != nil {

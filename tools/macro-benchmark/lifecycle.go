@@ -201,7 +201,14 @@ func sessionHost(ctx context.Context, state *sessionState) (remoteHost, error) {
 		return remoteHost{}, errors.New("instance missing")
 	}
 	instance := out.Reservations[0].Instances[0]
-	if !ownedResource(instance.Tags, state.Config.RunID) {
+	ownerID := state.Config.RunID
+	if state.Kind == "rerun" {
+		if !validSessionID(state.StorageRunID) || state.StorageRunID == state.Config.RunID {
+			return remoteHost{}, errors.New("invalid rerun storage owner")
+		}
+		ownerID = state.StorageRunID
+	}
+	if !ownedResource(instance.Tags, ownerID) {
 		return remoteHost{}, errors.New("instance ownership mismatch")
 	}
 	address := aws.ToString(instance.PublicIpAddress)
@@ -211,7 +218,7 @@ func sessionHost(ctx context.Context, state *sessionState) (remoteHost, error) {
 	if address == "" {
 		return remoteHost{}, errors.New("instance has no reachable address")
 	}
-	return remoteHost{address: address, key: state.Config.KeyPath, knownHosts: filepath.Join(state.Config.Results, state.Config.RunID, "known_hosts")}, nil
+	return remoteHost{address: address, key: state.Config.KeyPath, knownHosts: filepath.Join(state.Config.Results, ownerID, "known_hosts")}, nil
 }
 
 func collectSession(ctx context.Context, store *stateStore, state *sessionState) error {
@@ -240,6 +247,18 @@ func stopSession(ctx context.Context, store *stateStore, state *sessionState) er
 }
 
 func destroySession(ctx context.Context, store *stateStore, state *sessionState) error {
+	if state.Kind == "rerun" {
+		return errors.New("child destruction is not supported; use s to stop and retain its artifacts; only the owner can destroy AWS")
+	}
+	states, err := store.list()
+	if err != nil {
+		return err
+	}
+	for _, child := range states {
+		if child.Kind == "rerun" && child.StorageRunID == state.Config.RunID && activePhase(child.Phase) {
+			return fmt.Errorf("child %s is active; stop it before destroying the owner", child.Config.RunID)
+		}
+	}
 	state.Phase = "destroying"
 	if err := store.save(state); err != nil {
 		return err
@@ -289,6 +308,20 @@ func destroySession(ctx context.Context, store *stateStore, state *sessionState)
 }
 
 func resumeSession(ctx context.Context, store *stateStore, state *sessionState) error {
+	if state.Kind == "rerun" {
+		switch state.Phase {
+		case "draft", "preparing":
+			return prepareRerunSession(ctx, store, state)
+		case "prepared", "uploading", "ready", "starting", "running":
+			return followManaged(ctx, store, state)
+		case "completed", "failed", "stopped", "interrupted":
+			return collectSession(ctx, store, state)
+		case "stopping":
+			return stopSession(ctx, store, state)
+		default:
+			return fmt.Errorf("unsupported child phase %q", state.Phase)
+		}
+	}
 	switch state.Phase {
 	case "draft", "preparing":
 		return prepareSession(ctx, store, state)

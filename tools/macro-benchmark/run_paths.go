@@ -9,6 +9,7 @@ import (
 // pass these into worker components rather than changing process-wide paths.
 type RunPaths struct {
 	ID      string
+	OwnerID string
 	Root    string
 	Bundle  string
 	Worker  string
@@ -18,6 +19,7 @@ type RunPaths struct {
 	Minio   string
 	Cluster string
 	Private string
+	Rerun   bool
 }
 
 func newRunPaths(base, id string) (RunPaths, error) {
@@ -34,6 +36,23 @@ func newRunPaths(base, id string) (RunPaths, error) {
 		Archive: filepath.Join(root, "results.tar.gz"), Ingest: filepath.Join(root, "work", "ingest"),
 		Minio: filepath.Join(root, "work", "minio"), Cluster: filepath.Join(root, "work", "cluster"), Private: filepath.Join(root, "private"),
 	}, nil
+}
+
+func newRerunPaths(base, id, ownerID string) (RunPaths, error) {
+	if !validSessionID(ownerID) || ownerID == id {
+		return RunPaths{}, errors.New("invalid rerun storage owner")
+	}
+	paths, err := newRunPaths(base, id)
+	if err != nil {
+		return RunPaths{}, err
+	}
+	owner, err := newRunPaths(base, ownerID)
+	if err != nil {
+		return RunPaths{}, err
+	}
+	paths.OwnerID, paths.Rerun = ownerID, true
+	paths.Ingest, paths.Minio = owner.Ingest, owner.Minio
+	return paths, nil
 }
 
 func (p RunPaths) unitName() string { return "macro-benchmark-run-" + p.ID + ".service" }

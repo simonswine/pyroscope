@@ -60,6 +60,29 @@ func (s *agentServer) startRun(id, digest string) (agentRunSummary, error) {
 	if m.RunID != id || saved != digest {
 		return agentRunSummary{}, errors.New("manifest_conflict")
 	}
+	if m.Mode == "rerun" {
+		source, err := s.rerunSource(m.StorageOwner)
+		if err != nil {
+			return agentRunSummary{}, fmt.Errorf("storage owner ineligible: %w", err)
+		}
+		var binding rerunBinding
+		if err := readYAML(filepath.Join(paths.Bundle, "rerun.yaml"), &binding); err != nil {
+			return agentRunSummary{}, err
+		}
+		if binding.Version != 1 || binding.StorageRunID != m.StorageOwner || binding.PlanSHA != source.PlanSHA || binding.WindowsSHA != source.WindowsSHA {
+			return agentRunSummary{}, errors.New("rerun storage binding mismatch")
+		}
+		found := false
+		for _, f := range m.Files {
+			if f.Path == "rerun.yaml" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return agentRunSummary{}, errors.New("rerun bundle is missing its binding manifest")
+		}
+	}
 	intentPath := filepath.Join(paths.Root, "start.json")
 	if previous, err := os.ReadFile(intentPath); err == nil {
 		var intent startIntent
@@ -111,6 +134,9 @@ func (s *agentServer) startRun(id, digest string) (agentRunSummary, error) {
 		return agentRunSummary{}, err
 	}
 	args := []string{"--unit=" + strings.TrimSuffix(paths.unitName(), ".service"), "--property=Type=exec", "--property=RemainAfterExit=yes", "--property=TimeoutStopSec=240", "--property=KillMode=mixed", binary, "worker", "-run-id", id, "-deadline", strconv.FormatInt(m.Deadline.Unix(), 10)}
+	if m.Mode == "rerun" {
+		args = append(args, "-mode", "rerun", "-storage-owner", m.StorageOwner)
+	}
 	output, err := exec.Command("systemd-run", args...).CombinedOutput()
 	if err != nil {
 		return agentRunSummary{}, fmt.Errorf("submit worker (reconcile before retry): %w: %s", err, output)

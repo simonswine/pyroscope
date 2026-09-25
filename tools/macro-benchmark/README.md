@@ -22,6 +22,7 @@ amd64 and uses systemd, not Docker or Kubernetes.
 | `j` / `k`, ↓ / ↑ | Select a session |
 | `p` | Discover settings and prepare the selected draft (no AWS resource creation) |
 | `r` | Resume/reconcile the selected session, or attach to its remote worker |
+| `R` | Rerun a completed or benchmark-failed storage owner on its existing instance (no replay) |
 | `c` | Cancel/detach the current **local** operation |
 | `g` | Collect the results archive |
 | `h` | Open an interactive SSH shell on the selected instance; `exit` returns to the TUI |
@@ -46,8 +47,18 @@ artifact download then use its framed protocol. The interactive `h` shell opens
 an independent SSH connection and does not stop the worker. Exiting the shell
 (or using OpenSSH's `~.` escape) returns to the dashboard.
 
-The TUI is still session-oriented: creating another run on the same EC2 node is
-not yet supported. Existing sessions started using the former `/tmp/benchmark`
+`R` creates a new child session on the owner's instance. It requires a remote
+`ingest-ready.yaml`, owner-scoped MinIO credentials, and the original local bundle;
+older runs without these records are rejected. The child builds new benchmark
+clients from the current checkout and reuses the original product commits and
+replay windows. If the original benchmark names no longer exist, choose
+replacements explicitly. The child has its own results and archive. Use `r` to
+reattach to a child. Child destruction is not supported: `d` refuses rather
+than risking the owner's storage or AWS resources. Stop a running child with
+`s`. Destroying an owner invalidates its children. Compaction may change stored
+data between measurements, limiting comparability.
+
+The TUI remains session-oriented: owner and child each have a separate snapshot. Existing sessions started using the former `/tmp/benchmark`
 worker are **not migrated** by this version; do not use `r`, `s`, or `g` on those
 sessions until a compatibility adapter is available. The removed public
 `prepare`, `run`, and `keygen` commands are replaced by the TUI. The private
