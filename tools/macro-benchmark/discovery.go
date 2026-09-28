@@ -79,8 +79,18 @@ func publicIPv4(ctx context.Context, client *http.Client, website string) (strin
 }
 
 func observabilityName() (string, error) {
-	verbs := []string{"tracing", "profiling", "sampling", "measuring", "observing", "inspecting", "scraping", "querying"}
-	animals := []string{"otter", "lynx", "badger", "falcon", "heron", "marten", "puffin", "wombat"}
+	verbs := []string{
+		"analyzing", "auditing", "benchmarking", "bikeshedding", "cataloging", "comparing",
+		"diagnosing", "exploring", "herdingcats", "inspecting", "measuring", "monitoring",
+		"observing", "probing", "profiling", "querying", "recording", "rubberducking",
+		"sampling", "scraping", "spelunking", "surveying", "testing", "tracing", "tracking",
+		"validating", "watching", "yakshaving",
+	}
+	animals := []string{
+		"alpaca", "badger", "beaver", "capybara", "dolphin", "elk", "falcon", "gecko",
+		"heron", "ibis", "jaguar", "kestrel", "koala", "lemur", "lynx", "marten",
+		"narwhal", "oryx", "otter", "puffin", "quokka", "raccoon", "stoat", "wombat",
+	}
 	random := make([]byte, 8)
 	if _, err := rand.Read(random); err != nil {
 		return "", err
