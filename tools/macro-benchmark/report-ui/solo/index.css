@@ -1,0 +1,1110 @@
+.fg-tt-container {
+  height: 100%;
+  min-width: 0;
+  background-color: var(--bg-secondary);
+  overflow: hidden;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.fg-tt-scroll {
+  flex: 1;
+  overflow: auto;
+  min-width: 0;
+}
+
+.fg-tt-table {
+  width: 100%;
+  /* Action (60) + Self (120) + Total (120) + Symbol (160 minimum) = 460.
+     Below this the Symbol column would collapse to zero with tableLayout:
+     fixed; the parent scroll container will horizontally scroll instead. */
+  min-width: 460px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--text-sm);
+}
+
+.fg-tt-diff .fg-tt-table {
+  min-width: 580px;
+}
+
+.fg-tt-thead {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-secondary);
+  z-index: 1;
+}
+
+.fg-tt-header-row {
+  border-bottom: 1px solid var(--border-weak);
+}
+
+.fg-tt-action-header {
+  width: 60px;
+  padding: 0;
+}
+
+.fg-tt-symbol-header {
+  text-align: left;
+  padding: 4px 8px;
+}
+
+.fg-tt-numeric-header {
+  text-align: right;
+  padding: 4px 8px;
+  width: 120px;
+}
+
+.fg-tt-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-weight: var(--weight-medium);
+  padding: 0;
+}
+
+.fg-tt-sort-btn:hover {
+  color: var(--text-primary);
+}
+
+.fg-tt-row {
+  /* height set via inline style because ROW_HEIGHT also drives the
+     virtualizer's spacer math and we want a single source of truth. */
+  border-bottom: 1px solid var(--border-weak);
+}
+
+.fg-tt-row:hover {
+  background-color: var(--action-hover);
+}
+
+.fg-tt-action-cell {
+  width: 60px;
+  padding: 2px 4px;
+  display: flex;
+  gap: 2px;
+}
+
+.fg-tt-action-btn {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  padding: 0;
+}
+
+.fg-tt-action-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--action-hover);
+}
+
+.fg-tt-action-btn[data-active="true"] {
+  color: var(--color-primary-text);
+}
+
+.fg-tt-symbol-cell {
+  padding: 4px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fg-tt-symbol-link {
+  color: var(--text-link);
+  text-decoration: none;
+}
+
+.fg-tt-symbol-link:hover {
+  text-decoration: underline;
+}
+
+.fg-tt-metric-cell {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+.fg-tt-metric-cell > span {
+  display: block;
+  line-height: 14px;
+}
+/* The entire cell is the 100% reference; the colored bar fills its share. */
+.fg-tt-metric-track {
+  width: 100%;
+  height: 3px;
+  margin-top: 2px;
+  background: var(--border-weak);
+}
+.fg-tt-metric-bar {
+  height: 100%;
+}
+
+.fg-tt-numeric-cell {
+  text-align: right;
+  padding: 4px 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  width: 120px;
+}
+
+/* Share the top table's surface, row height, typography, colors and column widths. */
+.fg-stacktrace .fg-tt-table {
+  min-width: 420px;
+}
+.fg-stacktrace-diff .fg-tt-table {
+  min-width: 540px;
+}
+.fg-stacktrace .fg-tt-action-header,
+.fg-stacktrace .fg-tt-action-cell {
+  width: 20px;
+  box-sizing: border-box;
+}
+.fg-stacktrace .fg-tt-action-cell {
+  padding: 2px 0;
+}
+.fg-stacktrace .fg-tt-symbol-header,
+.fg-stacktrace .fg-tt-symbol-cell {
+  padding-left: 0;
+}
+.fg-stacktrace .fg-tt-numeric-header .fg-tt-sort-btn {
+  justify-content: flex-end;
+}
+.fg-stacktrace .fg-tt-symbol-cell {
+  padding: 0 8px 0 0;
+}
+.fg-stacktrace-symbol {
+  display: flex;
+  align-items: center;
+  height: 25px;
+  min-width: 0;
+}
+/* Each level uses 12px instead of the previous 16px indentation. */
+.fg-stacktrace-guide {
+  position: relative;
+  flex: 0 0 12px;
+  height: 25px;
+}
+.fg-stacktrace-guide-continuation::before,
+.fg-stacktrace-branch::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  height: 50%;
+  border-left: 1px solid var(--border-medium);
+}
+.fg-stacktrace-guide-continuation::before {
+  height: 100%;
+}
+.fg-stacktrace-branch::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid var(--border-medium);
+}
+.fg-stacktrace-link {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 0;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.fg-stacktrace-match {
+  background: var(--action-selected);
+}
+
+.fg-ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 4px 0;
+  min-width: 200px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.fg-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fg-ctx-item:hover {
+  background: var(--action-hover);
+}
+
+.fg-ctx-group {
+  border-top: 1px solid var(--border-weak);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.fg-ctx-group-label {
+  padding: 4px 12px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fg-tooltip-diff {
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+.fg-tooltip-diff th,
+.fg-tooltip-diff td {
+  padding: 4px 8px;
+  text-align: right;
+}
+.fg-tooltip-diff th:first-child {
+  text-align: left;
+}
+.fg-tooltip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1000;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  box-shadow: var(--shadow-md);
+  max-width: 400px;
+}
+
+.fg-tooltip-content {
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+.fg-tooltip-name {
+  margin-top: 0;
+  word-break: break-all;
+}
+
+.fg-tooltip-last {
+  margin-bottom: 0;
+}
+
+.fg-canvas-graph {
+  overflow: auto;
+  flex-grow: 1;
+  flex-basis: 50%;
+}
+
+.fg-canvas-wrapper {
+  cursor: pointer;
+  flex: 1;
+  overflow: hidden;
+}
+
+.fg-metadata {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.fg-metadata-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
+.fg-metadata-pill-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.fg-metadata-pill-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fg-metadata-pill-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.fg-metadata-pill-close:hover {
+  color: var(--text-primary);
+}
+
+.fg-diff-legend {
+  padding: 12px 8px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.fg-diff-legend-scale {
+  height: 8px;
+  border-radius: var(--radius-md);
+}
+.fg-diff-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.fg-diff-legend small {
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.fg-graph {
+  overflow: auto;
+  flex-grow: 1;
+  flex-basis: 50%;
+}
+
+.fg-sandwich-canvas-wrapper {
+  display: flex;
+  /* margin-bottom is set inline per-render because it depends on
+     devicePixelRatio + PIXELS_PER_LEVEL constant. */
+}
+
+.fg-sandwich-marker {
+  writing-mode: vertical-lr;
+  transform: rotate(180deg);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.fg-sandwich-marker-callees {
+  text-align: right;
+}
+
+.fg-sandwich-marker-icon {
+  vertical-align: baseline;
+}
+
+.fg-popover-anchor {
+  display: inline-block;
+}
+
+.fg-popover-overlay {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 4px 0;
+  min-width: 160px;
+}
+
+.fg-popover-item {
+  padding: 6px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fg-popover-item:hover,
+.fg-popover-item:focus {
+  background: var(--action-hover);
+  outline: none;
+}
+
+.fg-popover-item[data-active="true"] {
+  background: var(--action-selected);
+  color: var(--color-primary-text);
+}
+
+.fg-cs-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  width: 34px;
+  padding: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.fg-cs-button:hover {
+  background: var(--action-hover);
+}
+
+.fg-cs-dot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+
+.fg-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  width: 100%;
+  top: 0;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.fg-header-sticky {
+  z-index: 1000;
+  position: sticky;
+  background: var(--bg-primary);
+}
+
+.fg-header-input-container {
+  align-self: flex-end;
+  flex-grow: 1;
+  min-width: 150px;
+  max-width: 350px;
+}
+
+.fg-header-right {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.fg-header-extra-elements {
+  margin-left: 0;
+}
+
+.fg-header-search-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.fg-header-search-input {
+  flex: 1;
+  height: 28px;
+  padding-left: 8px;
+  padding-right: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.fg-header-search-input:focus {
+  border-color: var(--color-primary-border);
+}
+
+.fg-header-search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.fg-header-clear-button {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.fg-header-clear-button:hover {
+  color: var(--text-primary);
+}
+
+.fg-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.fg-header-icon-btn:hover {
+  background: var(--action-hover);
+}
+
+.fg-header-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.fg-header-btn-group,
+.fg-header-radio-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+.fg-header-btn-group .fg-header-icon-btn {
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+}
+.fg-header-btn-group .fg-header-icon-btn:hover {
+  color: var(--text-primary);
+}
+.fg-header-radio-control,
+.fg-header-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.fg-header-radio-control > span,
+.fg-header-control > span {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+.fg-header-radio-cell {
+  position: relative;
+  display: inline-flex;
+}
+
+.fg-header-radio-input {
+  /* Overlay the input on top of its label so it stays the click target
+     (Playwright's .click() goes to the actual element) while the label
+     provides the visuals. */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.fg-header-radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.fg-header-radio-label:hover {
+  background: var(--action-hover);
+}
+
+.fg-header-radio-label[data-checked="true"] {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+
+.fg-header-radio-input:disabled + .fg-header-radio-label {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.fg-header-radio-input:focus-visible + .fg-header-radio-label {
+  outline: 2px solid var(--action-focus);
+  outline-offset: 1px;
+}
+
+/* Design tokens adapted from grafana/pyroscope ui/src/theme.css (Apache-2.0).
+   No global reset: safe to use alongside an application stylesheet. */
+:root {
+  /* ── Neutral (true grey, no tint) ──────────────────────────────────────── */
+  --neutral-0: #ffffff;
+  --neutral-50: #f4f4f4;
+  --neutral-100: #e6e6e6;
+  --neutral-200: #c9c9c9;
+  --neutral-300: #9c9c9c;
+  --neutral-400: #6f6f6f;
+  --neutral-500: #525252;
+  --neutral-600: #3d3d3d;
+  --neutral-700: #2f2f2f;
+  --neutral-800: #262626;
+  --neutral-850: #1f1f1f;
+  --neutral-900: #1a1a1a;
+  --neutral-950: #141414;
+  --neutral-1000: #000000;
+
+  /* ── Blue ───────────────────────────────────────────────────────────────── */
+  --blue-100: #d6e4ff;
+  --blue-200: #adc8ff;
+  --blue-300: #6e9fff;
+  --blue-400: #5a86de;
+  --blue-500: #3d71d9;
+  --blue-600: #2e5bbf;
+  --blue-700: #1e449e;
+
+  /* ── Green ──────────────────────────────────────────────────────────────── */
+  --green-100: #d4f0e2;
+  --green-200: #9fdfc0;
+  --green-300: #6ccf8e;
+  --green-400: #3c9266;
+  --green-500: #1a7f4b;
+  --green-600: #126638;
+  --green-700: #0b4a28;
+
+  /* ── Red ────────────────────────────────────────────────────────────────── */
+  --red-100: #ffd6e3;
+  --red-200: #ff9cbf;
+  --red-300: #ff5286;
+  --red-400: #d73274;
+  --red-500: #d10e5c;
+  --red-600: #a80949;
+  --red-700: #7c0636;
+
+  /* ── Orange ─────────────────────────────────────────────────────────────── */
+  --orange-100: #fff0cc;
+  --orange-200: #ffd47a;
+  --orange-300: #fbad37;
+  --orange-400: #ffa826;
+  --orange-500: #ff9900;
+  --orange-600: #cc7a00;
+  --orange-700: #995c00;
+
+  /* ── Spacing (4 px base, rem units) ────────────────────────────────────── */
+  /* 4 px base in rem is the industry standard (Material, Radix, Tailwind).  */
+  /* rem scales with the user's browser font-size setting (accessibility).    */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-0-5: 0.125rem; /*  2 px */
+  --space-1: 0.25rem; /*  4 px */
+  --space-1-5: 0.375rem; /*  6 px */
+  --space-2: 0.5rem; /*  8 px */
+  --space-3: 0.75rem; /* 12 px */
+  --space-4: 1rem; /* 16 px */
+  --space-5: 1.25rem; /* 20 px */
+  --space-6: 1.5rem; /* 24 px */
+  --space-8: 2rem; /* 32 px */
+  --space-10: 2.5rem; /* 40 px */
+  --space-12: 3rem; /* 48 px */
+  --space-16: 4rem; /* 64 px */
+  --space-20: 5rem; /* 80 px */
+  --space-24: 6rem; /* 96 px */
+
+  /* ── Border radius ──────────────────────────────────────────────────────── */
+  --radius-sm: 3px; /* chips, badges, small inputs                    */
+  --radius-md: 5px; /* buttons, inputs, standard elements             */
+  --radius-lg: 8px; /* cards, panels, dropdowns                       */
+  --radius-xl: 12px; /* dialogs, modals, large containers              */
+  --radius-full: 9999px; /* pills, avatar circles                          */
+
+  /* ── Typography ─────────────────────────────────────────────────────────── */
+  --font-sans:
+    "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "Roboto Mono", "Fira Code", "Cascadia Code", "Menlo", "Consolas", monospace;
+
+  /* Size scale — anchored at 14 px as the base UI font size */
+  --text-2xs: 0.625rem; /* 10 px */
+  --text-xs: 0.6875rem; /* 11 px */
+  --text-sm: 0.75rem; /* 12 px */
+  --text-md: 0.875rem; /* 14 px  ← body / base */
+  --text-lg: 1rem; /* 16 px */
+  --text-xl: 1.125rem; /* 18 px */
+  --text-2xl: 1.25rem; /* 20 px */
+  --text-3xl: 1.5rem; /* 24 px */
+  --text-4xl: 2rem; /* 32 px */
+
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-bold: 700;
+
+  --leading-none: 1;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-base: 1.5;
+  --leading-relaxed: 1.7;
+
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0em;
+  --tracking-wide: 0.02em;
+  --tracking-wider: 0.05em;
+  --tracking-caps: 0.08em;
+
+  /* ── Z-index ────────────────────────────────────────────────────────────── */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-overlay: 1200;
+  --z-modal: 1300;
+  --z-popover: 1400;
+  --z-toast: 1500;
+  --z-tooltip: 1600;
+
+  /* ── Motion ─────────────────────────────────────────────────────────────── */
+  --duration-instant: 50ms;
+  --duration-fast: 100ms;
+  --duration-base: 150ms;
+  --duration-slow: 200ms;
+  --duration-slower: 300ms;
+  --duration-slowest: 500ms;
+
+  --ease-linear: linear;
+  --ease-out: ease-out;
+  --ease-in-out: ease-in-out;
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* -----------------------------------------------------------------------------
+   §3  Semantic Tokens — Dark mode (default)
+
+   Components reference these. They change between themes.
+
+   Background depth model (furthest back → foremost):
+     canvas → primary → secondary → elevated
+----------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  /* ── Backgrounds ────────────────────────────────────────────────────────── */
+  --bg-canvas: #1a1a1a; /* page fill, outermost backdrop                 */
+  --bg-primary: #1f1f1f; /* panels, cards, main content surfaces          */
+  --bg-secondary: #262626; /* sidebars, nested surfaces, form inputs        */
+  --bg-elevated: #2f2f2f; /* dropdowns, popovers, tooltips, dialogs        */
+
+  /* ── Borders ────────────────────────────────────────────────────────────── */
+  --border-weak: rgba(255, 255, 255, 0.06); /* hairlines, dividers       */
+  --border-medium: rgba(255, 255, 255, 0.12); /* standard element borders  */
+  --border-strong: rgba(255, 255, 255, 0.22); /* focused / prominent rings */
+
+  /* ── Text ───────────────────────────────────────────────────────────────── */
+  --text-primary: #d6d6d6; /* main body text                     */
+  --text-secondary: #8d8d8d; /* labels, hints, descriptions        */
+  --text-disabled: #585858; /* non-interactive / disabled text    */
+  --text-link: var(--blue-300); /* #6e9fff — kept blue for link affordance */
+  --text-link-hover: var(--blue-200); /* #adc8ff                          */
+  --text-max-contrast: #f0f0f2; /* text on colored / inverted bg     */
+
+  /* ── Action states ──────────────────────────────────────────────────────── */
+  --action-hover: rgba(255, 255, 255, 0.06); /* hover overlay on items  */
+  --action-selected: rgba(61, 113, 217, 0.2); /* selected item overlay   */
+  --action-focus: rgba(61, 113, 217, 0.5); /* focus ring color        */
+
+  /* ── Shadows ────────────────────────────────────────────────────────────── */
+  --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.65);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.7);
+
+  /* ── Primary (blue #3d71d9) ─────────────────────────────────────────────── */
+  --color-primary: var(--blue-500); /* #3d71d9            */
+  --color-primary-hover: var(--blue-400); /* #5a86de            */
+  --color-primary-subtle: rgba(61, 113, 217, 0.18); /* tinted bg         */
+  --color-primary-border: var(--blue-300); /* #6e9fff            */
+  --color-primary-text: var(--blue-300); /* on-theme label     */
+  --color-primary-foreground: #ffffff; /* text on primary bg */
+
+  /* ── Secondary (low-contrast ghost surface) ─────────────────────────────── */
+  --color-secondary: rgba(204, 204, 220, 0.1);
+  --color-secondary-hover: rgba(204, 204, 220, 0.16);
+  --color-secondary-border: rgba(204, 204, 220, 0.28);
+  --color-secondary-foreground: var(--text-primary);
+
+  /* ── Success (green #1a7f4b) ────────────────────────────────────────────── */
+  --color-success: var(--green-500);
+  --color-success-hover: var(--green-400);
+  --color-success-subtle: rgba(26, 127, 75, 0.18);
+  --color-success-border: var(--green-300);
+  --color-success-text: var(--green-300);
+  --color-success-foreground: #ffffff;
+
+  /* ── Error (red #d10e5c) ────────────────────────────────────────────────── */
+  --color-error: var(--red-500);
+  --color-error-hover: var(--red-400);
+  --color-error-subtle: rgba(209, 14, 92, 0.18);
+  --color-error-border: var(--red-300);
+  --color-error-text: var(--red-300);
+  --color-error-foreground: #ffffff;
+
+  /* ── Warning (orange #ff9900) ───────────────────────────────────────────── */
+  --color-warning: var(--orange-500);
+  --color-warning-hover: var(--orange-400);
+  --color-warning-subtle: rgba(255, 153, 0, 0.16);
+  --color-warning-border: var(--orange-300);
+  --color-warning-text: var(--orange-300);
+  --color-warning-foreground: #000000; /* black on orange    */
+}
+
+/* -----------------------------------------------------------------------------
+   §4  Semantic Overrides — Light mode  [data-theme="light"]
+
+   Only tokens that change between themes are redeclared here.
+   Primitives and theme-invariant values inherit from :root.
+----------------------------------------------------------------------------- */
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* ── Backgrounds ────────────────────────────────────────────────────────── */
+  --bg-canvas: #edf0f7; /* soft cool gray — avoids harsh pure white      */
+  --bg-primary: #ffffff; /* panels pop against canvas                     */
+  --bg-secondary: #f3f5fb; /* inputs, nested areas, sidebars               */
+  --bg-elevated: #ffffff; /* elevated surfaces distinguished by shadow     */
+
+  /* ── Borders ────────────────────────────────────────────────────────────── */
+  --border-weak: rgba(25, 35, 80, 0.07);
+  --border-medium: rgba(25, 35, 80, 0.14);
+  --border-strong: rgba(25, 35, 80, 0.25);
+
+  /* ── Text ───────────────────────────────────────────────────────────────── */
+  --text-primary: #1c2038;
+  --text-secondary: #4d557a;
+  --text-disabled: #9aa0bf;
+  --text-link: var(--blue-500); /* #3d71d9 — readable on white      */
+  --text-link-hover: var(--blue-600); /* #2e5bbf                          */
+  --text-max-contrast: #000000;
+
+  /* ── Action states ──────────────────────────────────────────────────────── */
+  --action-hover: rgba(25, 35, 80, 0.06);
+  --action-selected: rgba(61, 113, 217, 0.12);
+  --action-focus: rgba(61, 113, 217, 0.4);
+
+  /* ── Shadows (softer in light mode) ────────────────────────────────────── */
+  --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.07);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.09);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.11);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.13);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.15);
+
+  /* ── Color adjustments for light-mode readability ───────────────────────── */
+  /* "text" variants use darker shades so they're readable on white surfaces  */
+  --color-primary-text: var(--blue-500);
+  --color-primary-subtle: rgba(61, 113, 217, 0.1);
+
+  --color-success-text: var(--green-500);
+  --color-success-subtle: rgba(26, 127, 75, 0.1);
+
+  --color-error-text: var(--red-500);
+  --color-error-subtle: rgba(209, 14, 92, 0.1);
+
+  --color-warning-text: var(--orange-600); /* deeper on white    */
+  --color-warning-subtle: rgba(255, 153, 0, 0.09);
+
+  --color-secondary: rgba(25, 35, 80, 0.07);
+  --color-secondary-hover: rgba(25, 35, 80, 0.12);
+  --color-secondary-border: rgba(25, 35, 80, 0.2);
+}
+
+.fg-container {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.fg-container {
+  overflow: auto;
+  height: 100%;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+
+.fg-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fg-table-container {
+  height: 800px;
+}
+
+.fg-horizontal-container {
+  display: flex;
+  min-height: 0;
+  flex-direction: row;
+  column-gap: 8px;
+  width: 100%;
+}
+
+.fg-horizontal-graph {
+  flex-basis: 50%;
+}
+
+.fg-horizontal-table {
+  flex-basis: 50%;
+  max-height: 800px;
+}
+
+.fg-vertical-graph {
+  margin-bottom: 8px;
+}
+
+.fg-vertical-table {
+  height: 800px;
+}
+
+.fg-pane-controls {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.fg-layout-picker,
+.fg-view-picker,
+.fg-data-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.fg-layout-picker > span,
+.fg-view-picker > span,
+.fg-data-picker > span {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+.fg-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  max-width: 100%;
+}
+.fg-segmented button {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  height: 28px;
+  padding: 0 10px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+.fg-segmented button:hover {
+  background: var(--action-hover);
+  color: var(--text-primary);
+}
+.fg-segmented button:focus-visible {
+  outline: 2px solid var(--action-focus);
+  outline-offset: 1px;
+}
+.fg-segmented button[aria-pressed="true"] {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+.fg-pane-controls {
+  flex: none;
+}
+.fg-pane-with-picker,
+.fg-dual-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 8px;
+}
+.fg-pane-with-picker {
+  height: 100%;
+}
+.fg-pane-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.fg-dual,
+.fg-dual-vertical {
+  display: flex;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+.fg-dual-vertical {
+  flex-direction: column;
+}
+.fg-dual-vertical > .fg-dual-pane + .fg-dual-pane {
+  border-top: 1px solid var(--border-medium);
+  padding-top: 8px;
+}
+.fg-dual-pane {
+  flex: 1 1 0;
+  overflow: hidden;
+}
+.fg-pane-content .fg-table-container {
+  height: 100%;
+}
+.fg-pane-content .fg-stacktrace {
+  min-height: 0;
+  max-height: none;
+}
+@media (max-width: 650px) {
+  .fg-dual {
+    flex-direction: column;
+  }
+}
