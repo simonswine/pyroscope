@@ -1,18 +1,13 @@
 {
   "private": true,
   "packageManager": "yarn@4.13.0",
+  "scripts": {
+    "build": "node ../../../ui/node_modules/vite/bin/vite.js build --config vite.config.mjs"
+  },
   "dependencies": {
-    "@emotion/css": "11.13.5",
-    "@grafana/data": "13.2.2",
-    "@grafana/ui": "13.2.2",
     "@leeoniya/ufuzzy": "1.0.19",
-    "d3-scale": "4.0.2",
-    "lodash": "4.17.23",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-table": "7.8.0",
-    "react-use": "17.6.1",
-    "react-virtualized-auto-sizer": "1.0.26",
     "tinycolor2": "1.6.0"
   }
 }

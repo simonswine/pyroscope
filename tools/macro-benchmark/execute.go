@@ -46,6 +46,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 		return err
 	}
 	defer runLog.Close()
+	startedAt := time.Now().UTC()
 	previous := log.Writer()
 	log.SetOutput(io.MultiWriter(os.Stdout, runLog))
 	defer log.SetOutput(previous)
@@ -69,7 +70,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 			runErr = errors.Join(runErr, p.stop(stopCtx))
 			stop()
 		}
-		status := map[string]any{"success": runErr == nil, "finished_at": time.Now().UTC()}
+		status := map[string]any{"success": runErr == nil, "started_at": startedAt, "finished_at": time.Now().UTC()}
 		if runErr != nil {
 			status["error"] = runErr.Error()
 		}

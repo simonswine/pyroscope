@@ -197,6 +197,7 @@ func executeRerun(ctx context.Context, paths RunPaths) (runErr error) {
 	if err := writeYAML(filepath.Join(paths.Results, "windows.yaml"), windows); err != nil {
 		return err
 	}
+	startedAt := time.Now().UTC()
 	var minio *managedProcess
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -207,7 +208,7 @@ func executeRerun(ctx context.Context, paths RunPaths) (runErr error) {
 			runErr = errors.Join(runErr, minio.stop(stopCtx))
 			stop()
 		}
-		result := map[string]any{"success": runErr == nil, "finished_at": time.Now().UTC()}
+		result := map[string]any{"success": runErr == nil, "started_at": startedAt, "finished_at": time.Now().UTC()}
 		if runErr != nil {
 			result["error"] = runErr.Error()
 		}

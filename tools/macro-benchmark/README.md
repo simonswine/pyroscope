@@ -226,13 +226,39 @@ components stop; it includes process-lifetime allocation samples. `cpu.pprof` an
 `ingest-cpu.pprof` and `ingest-heap.pprof` cover the **shared write/metastore runtime**
 (including recovery settling). They do not profile the HTTP benchmark client. Very short queries may still produce few or no CPU samples, even with `5x`.
 
-To generate a self-contained, offline comparison report from a collected archive:
+To generate a comparison report from a collected archive:
 
 ```bash
-go run . report ~/.local/state/pyroscope-macro-benchmark/results/<session-id>/results.tar.gz report.html
+go run . report ~/.local/state/pyroscope-macro-benchmark/results/<session-id>/results.tar.gz index.html
+python3 -m http.server # open http://localhost:8000/
 ```
 
-The report uses vendored benchstat for query results and the vendored Grafana flamegraph viewer for baseline, comparison, and native baseline/comparison diff profiles. Each benchmark has an external profile-type picker and one flamegraph with its own Baseline / Comparison / Diff controls. Diff bar widths combine both original samples; colors compare each stack's share of its respective total (green = lower comparison share, red = higher). CPU profiles include warmup and idle; heap profiles are post-GC in-use snapshots. Differences are descriptive, not statistical tests of profile samples. The viewer uses the upstream `@grafana/flamegraph` v13.2.2 new UI (`enableNewUI`), vendored under `report-ui/upstream/`; it does not include the former legacy viewer. To rebuild embedded assets from `tools/macro-benchmark`, run `cd report-ui && yarn install --immutable && cd ../../../ui && yarn install --immutable && yarn vite build --config report.vite.config.ts`. Commit the updated `report_assets/` alongside the source.
+The header shows the baseline/comparison refs and commits from `plan.yaml`,
+host details from `cpu.txt` (instance type and provisioned memory reflect the
+current `c6i.8xlarge` runner), and the worker's UTC start, finish, and elapsed
+time. New archives record `started_at` in `status.yaml`; older archives infer
+the start from the first UTC `run.log` entry. This measures worker execution,
+including dataset replay and cleanup, not EC2 provisioning.
+
+The overview has one row per reported benchmark or sub-benchmark, initially
+comparing `time/op`. Its metric selector switches the whole table to other
+reported metrics
+(benchstat means and significance) or query/ingest sampled CPU time (SI time
+units) and sampled process-lifetime allocated bytes (binary memory units,
+descriptive changes only). Profile captures are for the whole benchmark and
+are never attributed to individual sub-benchmarks.
+Missing measurements show as unavailable. Overview column headers sort by the
+unscaled values (durations in nanoseconds, allocated bytes in bytes, and
+changes in percentage points), with unavailable values last. Benchmark
+statistics stay visible; only the flamegraph is collapsible, and profile JSON
+loads when it is expanded.
+The layout and flamegraph use the available viewport width.
+
+Keep `index.html` and `index.assets/` together when publishing. Profile JSON files in
+`index.assets/` are fetched only when a flamegraph is opened; browsers block
+`fetch()` from `file://`, so serve the directory over HTTP (including GitHub Pages).
+
+The report uses vendored benchstat for query results and the standalone flamegraph from `simonswine/grafana-flamegraph` for baseline, comparison, and diff profiles. See `report-ui/solo/VENDORED.md` for the pinned source commit. Each benchmark has a collapsible flamegraph with a profile picker; the viewer itself offers baseline, comparison, and diff controls. CPU profiles include warmup and idle; allocation flamegraphs use `alloc_space` from heap profiles captured after GC and include all allocations since process start. Differences are descriptive, not statistical tests of profile samples. To rebuild the embedded assets from `tools/macro-benchmark`, run `cd report-ui && corepack yarn install --immutable && corepack yarn build` (requires Vite installed in `../../../ui`). Commit the updated `report_assets/` alongside the source.
 
 Results are isolated by version and benchmark (`bench.txt` contains all repetitions):
 
