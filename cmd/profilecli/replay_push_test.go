@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +24,35 @@ import (
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
 	"github.com/grafana/pyroscope/v2/pkg/pprof"
 )
+
+func TestReplayHTTPResume(t *testing.T) {
+	data := []byte("0123456789abcdef")
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("X-Goog-Generation", "123")
+		if requests == 1 {
+			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+			_, _ = w.Write(data[:5])
+			return
+		}
+		if r.Header.Get("Range") != "bytes=5-" {
+			t.Errorf("unexpected range %q", r.Header.Get("Range"))
+		}
+		w.Header().Set("Content-Range", "bytes 5-15/16")
+		w.Header().Set("Content-Length", "11")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(data[5:])
+	}))
+	defer srv.Close()
+	r, err := openReplayInput(context.Background(), srv.URL)
+	require.NoError(t, err)
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Equal(t, data, got)
+	require.NoError(t, r.Close())
+	require.Equal(t, 2, requests)
+}
 
 func TestReplayPushCLIFlags(t *testing.T) {
 	app := kingpin.New("profilecli", "test replay arguments")

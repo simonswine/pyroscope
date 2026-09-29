@@ -157,6 +157,7 @@ func openReplayInput(ctx context.Context, input string) (*rawHashReadCloser, err
 		if err != nil {
 			return nil, fmt.Errorf("failed to build request for replay dump file: %w", err)
 		}
+		req.Header.Set("Accept-Encoding", "identity")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch replay dump file: %w", err)
@@ -166,7 +167,11 @@ func openReplayInput(ctx context.Context, input string) (*rawHashReadCloser, err
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("failed to fetch replay dump file: unexpected status %s: %s", resp.Status, string(body))
 		}
-		return newRawHashReadCloser(resp.Body), nil
+		if resp.ContentLength < 0 {
+			_ = resp.Body.Close()
+			return nil, errors.New("replay HTTP input requires a known content length")
+		}
+		return newRawHashReadCloser(&resumableReplayBody{ctx: ctx, url: input, body: resp.Body, size: resp.ContentLength, generation: resp.Header.Get("X-Goog-Generation")}), nil
 	}
 
 	f, err := os.Open(input)
@@ -175,6 +180,72 @@ func openReplayInput(ctx context.Context, input string) (*rawHashReadCloser, err
 	}
 	return newRawHashReadCloser(f), nil
 }
+
+// resumableReplayBody retries only source reads, below hashing and decompression.
+// Bytes returned to the caller are never fetched again.
+type resumableReplayBody struct {
+	ctx        context.Context
+	url        string
+	body       io.ReadCloser
+	size       int64
+	offset     int64
+	generation string
+	retries    int
+}
+
+func (r *resumableReplayBody) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if r.offset == r.size {
+		return 0, io.EOF
+	}
+	for {
+		n, err := r.body.Read(p)
+		r.offset += int64(n)
+		if n > 0 {
+			r.retries = 0
+			if r.offset > r.size {
+				return n, errors.New("replay HTTP body exceeds declared size")
+			}
+			return n, nil
+		}
+		if err == nil {
+			return 0, nil
+		}
+		if r.offset == r.size {
+			return 0, io.EOF
+		}
+		if r.retries >= 5 {
+			return 0, fmt.Errorf("replay HTTP stream interrupted at byte %d: %w", r.offset, err)
+		}
+		r.retries++
+		_ = r.body.Close()
+		select {
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
+		case <-time.After(time.Duration(r.retries) * time.Second):
+		}
+		req, e := http.NewRequestWithContext(r.ctx, http.MethodGet, r.url, nil)
+		if e != nil {
+			return 0, e
+		}
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", r.offset))
+		req.Header.Set("Accept-Encoding", "identity")
+		resp, e := http.DefaultClient.Do(req)
+		if e != nil {
+			continue
+		}
+		want := fmt.Sprintf("bytes %d-%d/%d", r.offset, r.size-1, r.size)
+		if resp.StatusCode != http.StatusPartialContent || resp.Header.Get("Content-Range") != want || resp.ContentLength != r.size-r.offset || (r.generation != "" && resp.Header.Get("X-Goog-Generation") != r.generation) {
+			_ = resp.Body.Close()
+			return 0, fmt.Errorf("replay HTTP resume at byte %d: unexpected response %s (Content-Range %q)", r.offset, resp.Status, resp.Header.Get("Content-Range"))
+		}
+		r.body = resp.Body
+	}
+}
+
+func (r *resumableReplayBody) Close() error { return r.body.Close() }
 
 // newRawHashReadCloser wraps raw in a SHA-256 tee, then layers optional zstd
 // decompression on top. The hasher sees every raw byte read from the source.
