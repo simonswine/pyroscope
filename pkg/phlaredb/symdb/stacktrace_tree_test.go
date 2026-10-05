@@ -213,15 +213,20 @@ func assertRestoredStacktraceTree(t *testing.T, x *stacktraceTree) {
 	assert.Equal(t, x.nodes, restored.nodes)
 }
 
-// toStacktraceTree rebuilds the insertion links of a decoded tree. Insert puts each new
-// child first among its siblings, so prepending children in index order matches it.
+// toStacktraceTree rebuilds insertion links in the original sibling order.
 func (t *parentPointerTree) toStacktraceTree() *stacktraceTree {
 	x := stacktraceTree{nodes: make([]node, len(t.nodes)), wideThreshold: wideNodeScan}
 	x.nodes[0] = node{p: sentinel, fc: sentinel, ns: sentinel}
+	last := make([]int32, len(t.nodes))
 	for i := 1; i < len(t.nodes); i++ {
 		n := t.nodes[i]
-		x.nodes[i] = node{p: n.p, r: n.r, fc: sentinel, ns: x.nodes[n.p].fc}
-		x.nodes[n.p].fc = int32(i)
+		x.nodes[i] = node{p: n.p, r: n.r, fc: sentinel, ns: sentinel}
+		if last[n.p] == 0 {
+			x.nodes[n.p].fc = int32(i)
+		} else {
+			x.nodes[last[n.p]].ns = int32(i)
+		}
+		last[n.p] = int32(i)
 	}
 	return &x
 }

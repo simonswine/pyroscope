@@ -49,7 +49,7 @@ func Test_stacktrace_tree_big_profile_compatibility(t *testing.T) {
 	for _, s := range p.Sample {
 		require.Equal(t, original.insertOriginal(s.LocationId), indexed.insert(s.LocationId))
 	}
-	require.Equal(t, original.Nodes(), indexed.Nodes())
+	require.Equal(t, original.nodes, indexed.nodes)
 	var before, after bytes.Buffer
 	_, err = original.WriteTo(&before)
 	require.NoError(t, err)
