@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -60,6 +61,7 @@ func runTUI(ctx context.Context) error {
 	defer fmt.Fprint(tty, "\x1b[?25h\x1b[?1049l")
 
 	selected := 0
+	detailOffset := 0
 	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	lastSpin := time.Now()
 	message := "Saved checkpoints shown. r reconciles with AWS; it never replays a started worker."
@@ -109,7 +111,7 @@ func runTUI(ctx context.Context) error {
 			spin, _ = spin.Update(spin.Tick())
 			lastSpin = time.Now()
 		}
-		_, _ = io.WriteString(tty, tuiDisplayWithConfirmationAndSpinner(width, height, root, states, selected, message, cancel != nil, confirm, spin.View()))
+		_, _ = io.WriteString(tty, tuiDashboard(width, height, root, states, selected, message, cancel != nil, confirm, spin.View(), detailOffset))
 		// Darwin's poll reports POLLNVAL for /dev/tty; select works on both
 		// macOS controllers and Linux without a permanently blocked reader.
 		var readable unix.FdSet
@@ -168,7 +170,7 @@ func runTUI(ctx context.Context) error {
 						message = err.Error()
 						break
 					}
-					message = "Created child " + child.Config.RunID + ". Preparing without replay."
+					message = "Created child session " + child.Config.RunID + ". Preparing without replay."
 					start(*child, func(ctx context.Context, store *stateStore, child *sessionState) error {
 						if err := prepareRerunSession(ctx, store, child); err != nil {
 							return err
@@ -182,11 +184,17 @@ func runTUI(ctx context.Context) error {
 				return nil
 			}
 			switch key {
+			case ']':
+				detailOffset++
+			case '[':
+				detailOffset = max(0, detailOffset-1)
 			case 'j':
+				detailOffset = 0
 				if selected+1 < len(states) {
 					selected++
 				}
 			case 'k':
+				detailOffset = 0
 				if selected > 0 {
 					selected--
 				}
@@ -216,7 +224,7 @@ func runTUI(ctx context.Context) error {
 				if err := configureRun(tty, store, state); err != nil {
 					message = "Draft created; configuration not changed: " + err.Error()
 				} else {
-					message = "Created " + state.Config.RunID + ". p prepares without launching AWS resources."
+					message = "Created session " + state.Config.RunID + ". p prepares without launching AWS resources."
 				}
 				updated, err := store.list()
 				if err != nil {
@@ -487,7 +495,18 @@ func phaseBadgeStyle(phase string) string {
 	}
 }
 
+// colourPhaseCell overrides selection styling only within the phase cell.
+func colourPhaseCell(line, phase string, width int) string {
+	cell := ansi.Strip(ansi.Cut(line, 0, width))
+	cell += strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))
+	return phaseBadgeStyle(phase) + cell + "\x1b[0m" + ansi.Cut(line, width, ansi.StringWidth(line))
+}
+
 func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states []sessionState, selected int, message string, busy bool, confirm *tuiConfirmation, frame string) string {
+	return tuiDashboard(width, height, root, states, selected, message, busy, confirm, frame, 0)
+}
+
+func tuiDashboard(width, height int, root string, states []sessionState, selected int, message string, busy bool, confirm *tuiConfirmation, frame string, detailOffset int) string {
 	const (
 		reset = "\x1b[0m"
 		dim   = "\x1b[2m"
@@ -498,14 +517,27 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 		text, style string
 		trusted     bool
 	}
+	width, height = max(1, width), max(1, height)
+	screenWidth := width
+	wide := width >= 120
+	// Reserve the header and footer before allocating any content space.
+	const headerHeight, footerHeight = 3, 8
+	bodyHeight := max(0, height-1-headerHeight-footerHeight)
 	var lines []row
 	add := func(text, style string) { lines = append(lines, row{text: text, style: style}) }
 	addTableLine := func(text string) { lines = append(lines, row{text: text, trusted: true}) }
 	add(" PYROSCOPE  /  MACRO BENCHMARK", cyan)
-	add(" Persistent sessions · AWS workers · Profiling at scale", dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
-	add(" NEW SESSION   n configure · all benchmarks selected by default", "")
-	add(fmt.Sprintf(" SESSIONS (%d)   ↑/↓ or j/k select · saved checkpoints; r refreshes", len(states)), cyan)
+	add(fmt.Sprintf(" SESSIONS (%d)", len(states)), cyan)
+	if wide {
+		width = (screenWidth - 3) / 2
+	}
+	bodyStart := len(lines)
+	sessionHeight := bodyHeight
+	if !wide {
+		// Stable detail allocation, including optional error/deadline fields.
+		sessionHeight = max(2, bodyHeight-12)
+	}
 	selected = max(0, min(selected, len(states)-1))
 	if len(states) > 0 {
 		// Bubbles owns the table's cursor, viewport and column truncation. The
@@ -515,7 +547,7 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 		benchWidth := max(1, min(7, available/8))
 		ageWidth := max(1, min(13, available/5))
 		idWidth := max(1, available-phaseWidth-benchWidth-ageWidth)
-		columns := []table.Column{{Title: "PHASE", Width: phaseWidth}, {Title: "RUN ID", Width: idWidth}, {Title: "BENCH", Width: benchWidth}, {Title: "UPDATED", Width: ageWidth}}
+		columns := []table.Column{{Title: "PHASE", Width: phaseWidth}, {Title: "SESSION ID", Width: idWidth}, {Title: "BENCH", Width: benchWidth}, {Title: "UPDATED", Width: ageWidth}}
 		rows := make([]table.Row, 0, len(states))
 		for i, state := range states {
 			benchmarks, _ := selectedBenchmarks(state.Config.Inputs)
@@ -523,12 +555,18 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 			if activePhase(state.Phase) {
 				phase = frame + " " + state.Phase
 			}
+			marker := " "
 			if i == selected {
-				phase = "› " + phase
+				marker = "›"
 			}
+			// Reserve one cell for selection so the spinner and text never move.
+			phase = marker + phase
 			rows = append(rows, table.Row{terminalText(phase, 0), terminalText(state.Config.RunID, 0), fmt.Sprintf("%d", len(benchmarks)), terminalText(timeAgo(state.UpdatedAt), 0)})
 		}
-		view := table.New(table.WithColumns(columns), table.WithRows(rows), table.WithHeight(min(len(rows)+1, max(2, height-25))), table.WithWidth(available))
+		visibleRows := max(1, sessionHeight-1)
+		firstRow := max(0, selected-visibleRows+1)
+		lastRow := min(len(rows), firstRow+visibleRows)
+		view := table.New(table.WithColumns(columns), table.WithRows(rows[firstRow:lastRow]), table.WithHeight(visibleRows+1), table.WithWidth(available))
 		styles := table.DefaultStyles()
 		styles.Header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 		styles.Cell = lipgloss.NewStyle()
@@ -536,34 +574,12 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 		// same foreground, so neither selection nor terminal themes wash it out.
 		styles.Selected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#d6dce7"))
 		view.SetStyles(styles)
-		view.MoveDown(selected)
-		for _, line := range strings.Split(view.View(), "\n") {
-			// Apply the badge after Bubbles has aligned and truncated columns;
-			// ANSI escapes inside a cell would confuse runewidth. Colour the
-			// spinner and existing padding too, without widening the row.
-			for _, state := range states {
-				if state.Phase == "" {
-					continue
-				}
-				at := strings.Index(line, state.Phase)
-				if at < 0 || lipgloss.Width(line[:at]) >= phaseWidth {
-					continue
-				}
-				start := at
-				if activePhase(state.Phase) && frame != "" {
-					if spinnerAt := strings.LastIndex(line[:at], frame); spinnerAt >= 0 && lipgloss.Width(line[:spinnerAt]) < phaseWidth {
-						start = spinnerAt
-					}
-				}
-				if start > 0 && line[start-1] == ' ' {
-					start--
-				}
-				end := at + len(state.Phase)
-				if end < len(line) && line[end] == ' ' {
-					end++
-				}
-				line = line[:start] + phaseBadgeStyle(state.Phase) + line[start:end] + reset + line[end:]
-				break
+		view.MoveDown(selected - firstRow)
+		for i, line := range strings.Split(view.View(), "\n") {
+			// Colour by row identity, not text matching: even truncated phase
+			// names get the correct colour. Leave the header and blank rows alone.
+			if i > 0 && firstRow+i-1 < lastRow {
+				line = colourPhaseCell(line, states[firstRow+i-1].Phase, phaseWidth)
 			}
 			addTableLine(line)
 		}
@@ -571,10 +587,11 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 	if len(states) == 0 {
 		add(" No sessions yet. Press n to select benchmarks and Git refs.", dim)
 	}
+	detailStart := len(lines)
 	if len(states) > 0 {
 		s := states[selected]
 		add("", "")
-		add(" SELECTED SESSION", cyan)
+		add(" SELECTED SESSION   [/] scroll", cyan)
 		ingest := s.Config.Inputs.IngestRef
 		if ingest == "" {
 			ingest = s.Config.Inputs.ComparisonRef
@@ -611,6 +628,8 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 			addTableLine(line)
 		}
 	}
+	detailEnd := len(lines)
+	width = screenWidth
 	add("", "")
 	status := " READY"
 	if busy {
@@ -621,8 +640,55 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 	add(" Logs  "+filepath.Join(root, "controller.log"), dim)
 	add(strings.Repeat("─", max(1, width-1)), dim)
 	add(" e edit  p prepare  r resume  R rerun  h SSH  g collect  c detach", "")
-	add(" s stop     d destroy     a archive     q quit", "")
+	add(" n new  ↑/↓ j/k select  s stop  d destroy  a archive  q quit", "")
 	add(" EC2 keeps billing after quit/stop. Use d to destroy resources.", amber)
+	// Compose fixed regions rather than truncating a variable-length page.
+	// ANSI-aware clipping also prevents wide Unicode cells from wrapping.
+	renderRow := func(r row, cells int) string {
+		text := r.text
+		if !r.trusted {
+			text = terminalText(text, 0)
+		}
+		return r.style + ansi.Truncate(text, max(0, cells), "") + reset
+	}
+	fit := func(rows []row, count int) []row {
+		out := make([]row, max(0, count))
+		copy(out, rows)
+		return out
+	}
+	header := append([]row(nil), lines[:bodyStart]...)
+	sessions := lines[bodyStart:detailStart]
+	details := lines[detailStart:detailEnd]
+	detailHeight := bodyHeight
+	if !wide {
+		detailHeight = max(0, bodyHeight-min(sessionHeight, bodyHeight))
+	}
+	// Clamp scrolling to the final full page; the heading stays visible.
+	if len(details) > 2 && detailHeight > 2 {
+		offset := min(max(0, detailOffset), max(0, len(details)-detailHeight))
+		details = append(append([]row(nil), details[:2]...), details[2+offset:]...)
+	}
+	footer := append([]row(nil), lines[detailEnd:]...)
+	body := make([]row, bodyHeight)
+	if wide {
+		leftWidth := (screenWidth - 3) / 2
+		left, right := fit(sessions, bodyHeight), fit(details, bodyHeight)
+		for i := range body {
+			l := renderRow(left[i], leftWidth)
+			l += strings.Repeat(" ", max(0, leftWidth-ansi.StringWidth(l)))
+			body[i] = row{text: l + dim + " │ " + reset + renderRow(right[i], screenWidth-1-leftWidth-3), trusted: true}
+		}
+	} else {
+		n := min(sessionHeight, bodyHeight)
+		copy(body, fit(sessions, n))
+		copy(body[n:], details)
+	}
+	lines = append(header, body...)
+	lines = append(lines, footer...)
+	if height-1 < headerHeight+footerHeight {
+		// Compact terminals prioritize status and controls over the body.
+		lines = append(fit(header, min(2, height-1)), footer[1:]...)
+	}
 	var display strings.Builder
 	display.WriteString("\x1b[H\x1b[2J")
 	// Draw the confirmation over the session view rather than burying the question
@@ -656,8 +722,8 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 			} else {
 				// Content rows – first row is the title, rest are plain
 				raw := panelLines[i-panelTop-1]
-				text = terminalText(" "+raw, panelWidth)
-				text += strings.Repeat(" ", max(0, panelWidth-len([]rune(text))))
+				text = ansi.Truncate(terminalText(" "+raw, 0), panelWidth, "")
+				text += strings.Repeat(" ", max(0, panelWidth-ansi.StringWidth(text)))
 				if i == panelTop+1 {
 					cellStyle = popupBg + popupBold + popupFg
 				} else {
@@ -667,12 +733,7 @@ func tuiDisplayWithConfirmationAndSpinner(width, height int, root string, states
 			display.WriteString(cellStyle + padding + text + reset + "\r\n")
 			continue
 		}
-		display.WriteString(line.style)
-		if line.trusted {
-			display.WriteString(line.text)
-		} else {
-			display.WriteString(terminalText(line.text, max(1, width-1)))
-		}
+		display.WriteString(renderRow(line, width-1))
 		display.WriteString(reset + "\r\n")
 	}
 	return display.String()

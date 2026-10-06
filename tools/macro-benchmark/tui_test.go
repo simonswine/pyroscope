@@ -4,7 +4,56 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestTUISessionTerminology(t *testing.T) {
+	view := tuiDisplay(100, 35, "/state", []sessionState{{Phase: "draft"}}, 0, "", false)
+	for _, label := range []string{"SESSIONS (1)", "SESSION ID", "SELECTED SESSION"} {
+		if !strings.Contains(view, label) {
+			t.Errorf("missing %q", label)
+		}
+	}
+	if strings.Contains(view, "RUN ID") {
+		t.Fatal("saved session is labelled as a run")
+	}
+}
+
+func TestTUIFixedLayout(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{80, 30}, {120, 40}, {200, 60}} {
+		footerAt := -1
+		for _, count := range []int{0, 1, 40} {
+			states := make([]sessionState, count)
+			for i := range states {
+				states[i].Phase = "prepared"
+				states[i].Config.RunID = strings.Repeat("界", 100)
+			}
+			view := ansi.Strip(tuiDisplay(size.width, size.height, "/state", states, max(0, count-1), "Ready", false))
+			rows := strings.Split(strings.TrimSuffix(view, "\r\n"), "\r\n")
+			if len(rows) != size.height-1 {
+				t.Fatalf("%dx%d: got %d rows", size.width, size.height, len(rows))
+			}
+			for i, row := range rows {
+				if ansi.StringWidth(row) > size.width-1 {
+					t.Fatalf("row exceeds width: %q", row)
+				}
+				if strings.Contains(row, " READY") {
+					if footerAt >= 0 && footerAt != i {
+						t.Fatal("footer moved with session count")
+					}
+					footerAt = i
+				}
+			}
+			if !strings.Contains(view, "EC2 keeps billing") {
+				t.Fatal("missing billing warning")
+			}
+			if size.width >= 120 && !strings.Contains(view, " │ ") {
+				t.Fatal("missing split panes")
+			}
+		}
+	}
+}
 
 func TestTUIDisplay(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{100, 30}, {40, 24}, {10, 5}} {
@@ -54,15 +103,44 @@ func TestTUISpinnerAndPhaseColours(t *testing.T) {
 	}
 	first := tuiDisplayWithConfirmationAndSpinner(100, 35, "/state", states, 1, "", false, nil, "⠋")
 	second := tuiDisplayWithConfirmationAndSpinner(100, 35, "/state", states, 1, "", false, nil, "⠙")
-	if !strings.Contains(first, "\x1b[38;5;16;48;5;159m ⠋ running ") || !strings.Contains(second, "\x1b[38;5;16;48;5;159m ⠙ running ") || first == second {
+	if !strings.Contains(first, "\x1b[38;5;16;48;5;159m›⠋ running ") || !strings.Contains(second, "\x1b[38;5;16;48;5;159m›⠙ running ") || first == second {
 		t.Fatal("active session did not animate")
 	}
 	if strings.Contains(first, "⠋ draft") || strings.Contains(first, "⠋ destroyed") {
 		t.Fatal("inactive session is spinning")
 	}
-	for _, want := range []string{"\x1b[38;5;16;48;5;159m ⠋ running ", "\x1b[38;5;16;48;5;210m failed ", "\x1b[38;5;16;48;5;252m draft "} {
+	for _, want := range []string{"\x1b[38;5;16;48;5;159m›⠋ running ", "\x1b[38;5;16;48;5;210m   failed ", "\x1b[38;5;16;48;5;252m   draft "} {
 		if !strings.Contains(first, want) {
 			t.Errorf("missing phase colour %q", want)
+		}
+	}
+}
+
+func TestTUIPhaseSelectionDoesNotShift(t *testing.T) {
+	states := []sessionState{{Phase: "running"}, {Phase: "draft"}}
+	for _, selected := range []int{0, 1} {
+		view := ansi.Strip(tuiDisplayWithConfirmationAndSpinner(100, 35, "/state", states, selected, "", false, nil, "⠋"))
+		for _, line := range strings.Split(view, "\r\n") {
+			if strings.Contains(line, "⠋ running") && ansi.StringWidth(strings.SplitN(line, "⠋", 2)[0]) != 1 {
+				t.Fatal("spinner moved on selection")
+			}
+			if strings.Contains(line, "draft") && ansi.StringWidth(strings.SplitN(line, "draft", 2)[0]) != 3 {
+				t.Fatal("inactive phase moved on selection")
+			}
+		}
+	}
+}
+
+func TestPhaseCellFullWidth(t *testing.T) {
+	for _, prefix := range []string{"", "\x1b[1;30;47m"} {
+		line := prefix + "› running       run-id" + "\x1b[0m"
+		got := colourPhaseCell(line, "running", 16)
+		want := phaseBadgeStyle("running") + "› running       " + "\x1b[0m"
+		if !strings.HasPrefix(got, want) {
+			t.Fatalf("phase background does not fill cell: %q", got)
+		}
+		if ansi.Strip(got) != ansi.Strip(line) {
+			t.Fatal("colouring changed row contents or width")
 		}
 	}
 }
@@ -89,8 +167,9 @@ func TestTUISelectedSessionTable(t *testing.T) {
 	state.Config.Inputs.Benchtime = "5x"
 	for _, size := range []struct{ width, height int }{{100, 32}, {38, 25}} {
 		view := tuiDisplay(size.width, size.height, "/state", []sessionState{state}, 0, "Ready", false)
+		scrolled := tuiDashboard(size.width, size.height, "/state", []sessionState{state}, 0, "Ready", false, nil, "", 100)
 		for _, text := range []string{"FIELD", "VALUE", "Region", "Instance", "Refs", "Ingest", "Measurement", "Results", "Deadline", "Error"} {
-			if !strings.Contains(view, text) {
+			if !strings.Contains(view+scrolled, text) {
 				t.Errorf("%dx%d: missing %q", size.width, size.height, text)
 			}
 		}

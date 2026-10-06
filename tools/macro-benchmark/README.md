@@ -15,11 +15,27 @@ amd64 and uses systemd, not Docker or Kubernetes.
 
 ## TUI controls
 
+A **session** is the saved configuration, checkpoint, resource ownership, and
+results you manage in the controller. A **run** is benchmark execution within a
+session. **Rerun** creates a new child session that reuses the owner's storage.
+The UI calls the saved identifier **Session ID**; existing `RunID` fields and
+on-disk formats are unchanged.
+
+The dashboard reserves fixed header and footer regions and fills the remaining
+terminal space. At 120 columns or wider, sessions and details appear side by side;
+narrower terminals stack them. Use `[` / `]` to scroll details that do not fit.
+
+The configuration form keeps its header and Save/Cancel footer fixed, scrolling
+the fields and benchmark list to follow keyboard focus. Resize the terminal at
+any time. Invalid input is shown inline without discarding your edits; correct
+it and select Save again, or press Esc to cancel.
+
 | Key | Action |
 | --- | --- |
-| `n` | New run: select benchmarks, Git refs, repetitions and benchtime |
+| `n` | New session: select benchmarks, Git refs, repetitions and benchtime |
 | `e` | Edit the selected draft |
 | `j` / `k`, ↓ / ↑ | Select a session |
+| `[` / `]` | Scroll selected-session details up / down |
 | `p` | Discover settings and prepare the selected draft (no AWS resource creation) |
 | `r` | Resume/reconcile the selected session, or attach to its remote worker |
 | `R` | Rerun a completed or benchmark-failed storage owner on its existing instance (no replay) |
@@ -121,7 +137,7 @@ Controller defaults and dataset metadata are defined in `defaults.go`; no run
 YAML is required by the TUI. Benchmarks self-register in Go. YAML is used only
 for generated bundle/artifact manifests.
 
-New runs select **all benchmarks** by default. Enter comma-separated benchmark
+New sessions select **all benchmarks** by default. Enter comma-separated benchmark
 names to select a subset. Defaults are baseline `HEAD^`, comparison `HEAD`,
 **5 repetitions per benchmark per version**, and **benchtime `5x`** (25 timed queries per benchmark per version, plus warmups). The ingest
 ref follows the comparison ref unless overridden. Git refs must exist locally;

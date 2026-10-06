@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,10 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/grafana/pyroscope/macro-benchmark/benchmark"
 )
@@ -44,9 +48,9 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 
 	// --- form state ---
 	type refField struct {
-		label   string
-		value   string
-		hint    string // resolved commit or error, filled on blur
+		label string
+		value string
+		hint  string // resolved commit or error, filled on blur
 	}
 
 	inputs := state.Config.Inputs
@@ -106,7 +110,6 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 	if w, h, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
 		width, height = w, h
 	}
-	_ = height
 
 	// Text editing state for text fields.
 	textFields := map[int]*string{
@@ -158,10 +161,9 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 
 	errorMsg := ""
 
+	scroll := 0
 	render := func() {
-		if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
-			width = w
-		}
+		width, height = terminalSize(tty)
 
 		allChecked := true
 		noneChecked := true
@@ -173,28 +175,30 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 			}
 		}
 
-		var b strings.Builder
-		// Clear screen, hide cursor during redraw.
-		b.WriteString("\x1b[H\x1b[2J")
+		var rows []string
+		focusRow := 0
 
 		const (
-			reset  = "\x1b[0m"
-			dim    = "\x1b[2m"
-			cyan   = "\x1b[1;36m"
-			amber  = "\x1b[33m"
-			rev    = "\x1b[7m"
-			green  = "\x1b[32m"
-			red    = "\x1b[31m"
-			bold   = "\x1b[1m"
+			reset = "\x1b[0m"
+			dim   = "\x1b[2m"
+			cyan  = "\x1b[1;36m"
+			amber = "\x1b[33m"
+			rev   = "\x1b[7m"
+			green = "\x1b[32m"
+			red   = "\x1b[31m"
+			bold  = "\x1b[1m"
 		)
 
-		line := func(s string) { b.WriteString(s + "\r\n") }
+		line := func(s string) { rows = append(rows, s) }
 
-		line(cyan + " CONFIGURE RUN" + reset + dim + "   ↑↓/Tab move · Space toggle · a toggle-all · Enter confirm · Esc cancel" + reset)
+		line(cyan + " CONFIGURE SESSION" + reset + dim + "   ↑↓/Tab move · Space toggle · a toggle-all · Enter confirm · Esc cancel" + reset)
 		line(dim + strings.Repeat("─", max(1, width-1)) + reset)
 
 		renderField := func(idx int, label, value, hint string) {
 			active := cursor == idx
+			if active {
+				focusRow = len(rows) - 2
+			}
 			prefix := "  "
 			labelStyle := ""
 			valStyle := dim
@@ -232,8 +236,18 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 					displayVal = value + rev + " " + reset
 				}
 			}
-			paddedLabel := fmt.Sprintf("%-16s", label)
-			paddedVal := padVisual(valStyle+displayVal, 40)
+			labelWidth := min(16, max(4, width/3))
+			valueWidth := max(1, width-labelWidth-5)
+			if active {
+				cp := min(cursors[idx], len([]rune(value)))
+				column := ansi.StringWidth(string([]rune(value)[:cp]))
+				start := max(0, column-valueWidth+1)
+				displayVal = ansi.Cut(displayVal, start, start+valueWidth)
+			} else {
+				displayVal = ansi.Truncate(displayVal, valueWidth, "")
+			}
+			paddedLabel := padVisual(ansi.Truncate(label, labelWidth, ""), labelWidth)
+			paddedVal := padVisual(valStyle+displayVal, min(40, valueWidth))
 			row := fmt.Sprintf("%s%s%s%s %s%s%s",
 				prefix, labelStyle, paddedLabel, reset,
 				paddedVal, reset,
@@ -267,6 +281,9 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 		for i, bm := range allBenchmarks {
 			idx := fCheckboxes + i
 			active := cursor == idx
+			if active {
+				focusRow = len(rows) - 2
+			}
 			prefix := "  "
 			if active {
 				prefix = cyan + "› " + reset
@@ -286,19 +303,22 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 				dim, bm.Dataset+reset))
 		}
 
-		line("")
+		bodyEnd := len(rows)
 		saveStyle := dim
 		if cursor == fSave {
 			saveStyle = rev
 		}
 		line("  " + saveStyle + "  Save  " + reset + dim + "  (or press Enter on any field to advance)" + reset)
 
+		line(dim + "  Esc cancel · ↑↓/Tab move · Enter advances / saves" + reset)
+		status := ""
 		if errorMsg != "" {
-			line("")
-			line(red + "  Error: " + errorMsg + reset)
+			status = red + "  Error: " + terminalText(errorMsg, 0) + reset
 		}
-
-		fmt.Fprint(tty, b.String())
+		line(status)
+		view, offset := renderConfigScreen(width, height, rows[:2], rows[2:bodyEnd], rows[bodyEnd:], focusRow, scroll, cursor != fSave)
+		scroll = offset
+		fmt.Fprint(tty, view)
 	}
 
 	// Switch terminal to raw mode so we get individual keystrokes.
@@ -315,15 +335,34 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 	}
 	defer restore()
 
-	// Show cursor for text input.
-	fmt.Fprint(tty, "\x1b[?25h")
+	// The active text field draws its own cursor; hide the hardware cursor.
+	fmt.Fprint(tty, "\x1b[?25l")
 	defer fmt.Fprint(tty, "\x1b[?25l")
-
-	render()
 
 	var escBuf [8]byte
 
+retry:
+	render()
 	for {
+		// Periodically redraw so terminal resizes do not require a keystroke.
+		fd := int(tty.Fd())
+		if fd >= unix.FD_SETSIZE {
+			return errors.New("terminal file descriptor exceeds select capacity")
+		}
+		var readable unix.FdSet
+		readable.Set(fd)
+		timeout := unix.NsecToTimeval(int64(250 * time.Millisecond))
+		ready, err := unix.Select(fd+1, &readable, nil, nil, &timeout)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if ready == 0 {
+			render()
+			continue
+		}
 		n, err := tty.Read(escBuf[:])
 		if err != nil || n == 0 {
 			return err
@@ -388,7 +427,12 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 				}
 			}
 
-		case ' ': // Space — toggle checkbox
+		case ' ': // Space — toggle checkbox or insert into a text field.
+			if isTextField(cursor) {
+				cp := cursors[cursor]
+				insertChar(textFields[cursor], &cp, ' ')
+				cursors[cursor] = cp
+			}
 			if isCheckbox(cursor) {
 				i := cursor - fCheckboxes
 				checked[i] = !checked[i]
@@ -435,9 +479,6 @@ func configureRun(tty *os.File, store *stateStore, state *sessionState) error {
 	}
 
 save:
-	restore()
-	fmt.Fprint(tty, "\x1b[H\x1b[2J")
-
 	// Build benchmark selection.
 	var selectedNames []string
 	for i, b := range allBenchmarks {
@@ -448,14 +489,14 @@ save:
 	if len(selectedNames) == 0 {
 		errorMsg = "select at least one benchmark"
 		cursor = fCheckboxes
-		// re-enter the loop — easiest is to recurse once; just return the error
-		// so the caller shows it in the status bar.
-		return fmt.Errorf("select at least one benchmark")
+		goto retry
 	}
 
 	count, err := strconv.Atoi(strings.TrimSpace(countStr))
 	if err != nil || count < 1 {
-		return fmt.Errorf("repetitions must be a positive integer")
+		errorMsg = "repetitions must be a positive integer"
+		cursor = fCount
+		goto retry
 	}
 
 	inputs.BaselineRef = strings.TrimSpace(baseline)
@@ -479,14 +520,27 @@ save:
 
 	inputs.defaults()
 	if err := inputs.validate(); err != nil {
-		return err
+		errorMsg = err.Error()
+		if strings.Contains(errorMsg, "benchtime") {
+			cursor = fBenchtime
+		} else if strings.Contains(errorMsg, "baseline_ref") {
+			cursor = fBaseline
+		}
+		goto retry
 	}
 	if _, err := selectedBenchmarks(inputs); err != nil {
-		return err
+		errorMsg = err.Error()
+		goto retry
 	}
 
-	state.Config.Inputs, state.Plan = inputs, nil
-	return store.save(state)
+	updated := *state
+	updated.Config.Inputs, updated.Plan = inputs, nil
+	if err := store.save(&updated); err != nil {
+		errorMsg = err.Error()
+		goto retry
+	}
+	*state = updated
+	return nil
 }
 
 // insertChar inserts r at position *cp in *s and advances *cp.
