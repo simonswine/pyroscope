@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/google/pprof/profile"
 )
 
 // The write process includes all three metastores. Reuse its disk state and
@@ -23,7 +25,7 @@ func runBenchmarkGroup(ctx context.Context, paths RunPaths, inputs inputsConfig,
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	cpu, heap := filepath.Join(root, "ingest-cpu.pprof"), filepath.Join(root, "ingest-heap.pprof")
+	cpu, heap := filepath.Join(root, "metastore-cpu.pprof"), filepath.Join(root, "metastore-heap.pprof")
 	p, err := startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints=" + manifest, "-cpu-profile=" + cpu, "-mem-profile=" + heap}, append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(root, "ingest.log"))
 	if err != nil {
 		return err
@@ -65,6 +67,14 @@ func checkProfiles(paths ...string) error {
 			result = errors.Join(result, err)
 		} else if info.Size() == 0 {
 			result = errors.Join(result, fmt.Errorf("empty profile: %s", path))
+		} else {
+			data, err := os.ReadFile(path)
+			if err == nil {
+				_, err = profile.ParseData(data)
+			}
+			if err != nil {
+				result = errors.Join(result, fmt.Errorf("invalid profile %s: %w", path, err))
+			}
 		}
 	}
 	return result

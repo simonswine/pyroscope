@@ -239,8 +239,27 @@ five repetitions together. CPU
 profiling runs from readiness through the benchmark (including warmup and idle
 time), stopping before teardown. The heap profile is written after GC and before
 components stop; it includes process-lifetime allocation samples. `cpu.pprof` and `heap.pprof` cover the **shared frontend/backend runtime**.
-`ingest-cpu.pprof` and `ingest-heap.pprof` cover the **shared write/metastore runtime**
-(including recovery settling). They do not profile the HTTP benchmark client. Very short queries may still produce few or no CPU samples, even with `5x`.
+`metastore-cpu.pprof` and `metastore-heap.pprof` cover the **shared write/metastore runtime**
+(including recovery settling), not just metastore code. Reports also accept the old
+`ingest-cpu.pprof` / `ingest-heap.pprof` names. They do not profile the HTTP benchmark client. Very short queries may still produce few or no CPU samples, even with `5x`.
+
+The initial ingest process also writes `replay-cpu.pprof` and `replay-heap.pprof`
+at the result root. CPU capture starts before readiness is published and covers
+all dataset replays, the settling delay, and the compaction drain, stopping before
+component teardown. Distributor, both segment writers, compaction worker, and
+three metastores share this process and therefore one profile. Heap is captured
+after GC at the end of settling; allocation samples cover the process lifetime.
+These captures use the ingest revision, are not baseline/comparison pairs, and
+are not produced by reruns (which do not replay). Graceful failure/cancellation
+also finalizes partial captures; forced termination may leave invalid profiles.
+
+Replay profiles are not yet displayed in the comparison report. Extract them
+from `results.tar.gz` and open directly, for example:
+
+```bash
+tar -xzf results.tar.gz replay-cpu.pprof replay-heap.pprof
+go tool pprof -http=127.0.0.1:8080 replay-cpu.pprof
+```
 
 To generate a comparison report from a collected archive:
 
@@ -259,7 +278,7 @@ including dataset replay and cleanup, not EC2 provisioning.
 The overview has one row per reported benchmark or sub-benchmark, initially
 comparing `time/op`. Its metric selector switches the whole table to other
 reported metrics
-(benchstat means and significance) or query/ingest sampled CPU time (SI time
+(benchstat means and significance) or query/metastore sampled CPU time (SI time
 units) and sampled process-lifetime allocated bytes (binary memory units,
 descriptive changes only). Profile captures are for the whole benchmark and
 are never attributed to individual sub-benchmarks.
@@ -280,11 +299,13 @@ Results are isolated by version and benchmark (`bench.txt` contains all repetiti
 
 ```text
 baseline/<benchmark>/{bench.txt,cluster.log,cpu.pprof,heap.pprof,endpoints.yaml,metrics/}
-baseline/<benchmark>/{ingest.log,ingest-cpu.pprof,ingest-heap.pprof,ingest-endpoints.yaml}
+baseline/<benchmark>/{ingest.log,metastore-cpu.pprof,metastore-heap.pprof,ingest-endpoints.yaml}
 comparison/<benchmark>/...
 plan.yaml
 windows.yaml
 replay-<dataset>.log
+replay-cpu.pprof
+replay-heap.pprof
 ```
 
 Query shutdown is awaited, then the write cluster is stopped, so all profiles

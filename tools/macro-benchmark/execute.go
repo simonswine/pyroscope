@@ -51,6 +51,8 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	log.SetOutput(io.MultiWriter(os.Stdout, runLog))
 	defer log.SetOutput(previous)
 	var minio, cluster *managedProcess
+	replayCPU := filepath.Join(paths.Results, "replay-cpu.pprof")
+	replayHeap := filepath.Join(paths.Results, "replay-heap.pprof")
 	var observerCancel context.CancelFunc
 	var observerDone chan struct{}
 	defer func() {
@@ -69,6 +71,9 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 			stopCtx, stop := context.WithTimeout(cleanupCtx, 40*time.Second)
 			runErr = errors.Join(runErr, p.stop(stopCtx))
 			stop()
+			if p == cluster {
+				runErr = errors.Join(runErr, p.err, checkProfiles(replayCPU, replayHeap))
+			}
 		}
 		status := map[string]any{"success": runErr == nil, "started_at": startedAt, "finished_at": time.Now().UTC()}
 		if runErr != nil {
@@ -147,7 +152,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	}
 	clusterEnv := []string{"MINIO_ENDPOINT=127.0.0.1:9000", "MINIO_BUCKET=" + bucket, "MINIO_ROOT_USER=" + access, "MINIO_ROOT_PASSWORD=" + secret, "TMPDIR=" + paths.Cluster}
 	log.Print("starting ingest cluster on CPUs 4-6")
-	cluster, err = startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints", filepath.Join(paths.Bundle, "endpoints.yaml")},
+	cluster, err = startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints", filepath.Join(paths.Bundle, "endpoints.yaml"), "-cpu-profile=" + replayCPU, "-mem-profile=" + replayHeap},
 		append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(paths.Results, "cluster-ingest.log"))
 	if err != nil {
 		return err
@@ -190,6 +195,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	stopCtx, stop := context.WithTimeout(context.Background(), 90*time.Second)
 	err = errors.Join(cluster.stop(stopCtx), cluster.err)
 	stop()
+	err = errors.Join(err, checkProfiles(replayCPU, replayHeap))
 	cluster = nil
 	if err != nil {
 		return err

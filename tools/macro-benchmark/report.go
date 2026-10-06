@@ -112,7 +112,7 @@ func readReportArchive(filename string) (map[string][]byte, error) {
 		parts := strings.Split(name, "/")
 		if name != "plan.yaml" && name != "cpu.txt" && name != "status.yaml" && name != "run.log" &&
 			!(len(parts) == 3 && (parts[0] == "baseline" || parts[0] == "comparison") &&
-				(parts[2] == "bench.txt" || parts[2] == "cpu.pprof" || parts[2] == "heap.pprof" || parts[2] == "ingest-cpu.pprof" || parts[2] == "ingest-heap.pprof")) {
+				(parts[2] == "bench.txt" || parts[2] == "cpu.pprof" || parts[2] == "heap.pprof" || parts[2] == "metastore-cpu.pprof" || parts[2] == "metastore-heap.pprof" || parts[2] == "ingest-cpu.pprof" || parts[2] == "ingest-heap.pprof")) {
 			continue
 		}
 		if _, ok := files[name]; ok {
@@ -191,7 +191,7 @@ func buildReport(files map[string][]byte) reportData {
 		} else {
 			b.Stats = "Missing baseline or comparison bench.txt"
 		}
-		for _, p := range []string{"cpu", "heap", "ingest-cpu", "ingest-heap"} {
+		for _, p := range []string{"cpu", "heap", "metastore-cpu", "metastore-heap"} {
 			rp := reportProfile{Name: p}
 			if strings.Contains(p, "heap") {
 				rp.Name = strings.Replace(p, "heap", "allocations", 1)
@@ -202,6 +202,11 @@ func buildReport(files map[string][]byte) reportData {
 			var a, z *profile.Profile
 			for _, side := range []string{"baseline", "comparison"} {
 				data := files[side+"/"+name+"/"+p+".pprof"]
+				// Older archives called the shared write/metastore profiles ingest-*.
+				if len(data) == 0 && strings.HasPrefix(p, "metastore-") {
+					legacy := strings.Replace(p, "metastore-", "ingest-", 1)
+					data = files[side+"/"+name+"/"+legacy+".pprof"]
+				}
 				if len(data) == 0 {
 					rp.Warning += side + " profile missing; "
 					continue
