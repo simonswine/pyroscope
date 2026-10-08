@@ -90,9 +90,10 @@ func TestCompact_DeleteDatasets(t *testing.T) {
 	b := rewritten[0]
 	require.NotEqual(t, original.Id, b.Id)
 	require.Equal(t, original.CompactionLevel, b.CompactionLevel)
-	require.Len(t, b.Datasets, 2)
+	require.Len(t, b.Datasets, 3)
 	require.Equal(t, survivor, b.StringTable[b.Datasets[0].Name])
 	require.EqualValues(t, block.DatasetFormat1, b.Datasets[1].Format)
+	require.EqualValues(t, block.DatasetFormat2, b.Datasets[2].Format)
 	for _, s := range b.StringTable {
 		if strings.HasPrefix(s, "pyroscope-test/") {
 			require.Equal(t, survivor, s)

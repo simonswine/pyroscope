@@ -36,6 +36,32 @@ import (
 
 var defaultAnnotations []*typesv1.ProfileAnnotation
 
+func TestFlushedHeadVisitDatasetIndexSeries(t *testing.T) {
+	flushed := &FlushedHead{datasetIndexSeries: []*profileSeries{
+		{
+			lbs: phlaremodel.Labels{{Name: "first", Value: "one"}},
+			fp:  1,
+		},
+		{
+			lbs: phlaremodel.Labels{{Name: "second", Value: "two"}},
+			fp:  2,
+		},
+	}}
+
+	var visited []model.Fingerprint
+	stop := errors.New("stop")
+	err := flushed.VisitDatasetIndexSeries(func(labels phlaremodel.Labels, fp model.Fingerprint) error {
+		visited = append(visited, fp)
+		if labels.Get("first") == "one" {
+			return stop
+		}
+		return nil
+	})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, []model.Fingerprint{1}, visited)
+	require.ErrorContains(t, flushed.VisitDatasetIndexSeries(nil), "must not be nil")
+}
+
 func TestHeadLabelValues(t *testing.T) {
 	head := newTestHead()
 	head.Ingest(newProfileFoo(), uuid.New(), []*typesv1.LabelPair{{Name: "job", Value: "foo"}, {Name: "namespace", Value: "phlare"}}, defaultAnnotations)

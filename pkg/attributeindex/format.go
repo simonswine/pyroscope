@@ -1,0 +1,202 @@
+package attributeindex
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"hash/crc32"
+	"io"
+)
+
+var (
+	// AttributeIndexV1 deliberately has a distinct wire identity from the
+	// standalone attribute-block prototype. Readers reject the old ATTRBLK /
+	// ATTRFTR identity rather than treating its mapping-less payload as a valid
+	// selector-to-dataset lookup source.
+	headerMagic = [8]byte{'A', 'T', 'T', 'R', 'I', 'D', 'X', 1}
+	footerMagic = [8]byte{'A', 'T', 'T', 'R', 'I', 'F', 'T', 1}
+)
+
+const (
+	headerSize = 16
+	footerSize = 32
+	// maxPageLen bounds both the stored Zstd frame and its decoded page.
+	// Keeping these bounds equal makes the maximum working set straightforward
+	// to account for and prevents a small compressed frame from requesting an
+	// unbounded allocation.
+	maxPageLen = 64 << 20
+
+	// featureDatasetMappings is required for selector-to-dataset lookup.
+	// AttributeIndexV1 payloads without it are rejected, not treated as an
+	// empty mapping.
+	featureDatasetMappings = uint16(1 << iota)
+	// featurePageCompression changes directory descriptors to include a page
+	// codec and decoded length. It is deliberately a required feature: older
+	// readers cannot mistake a compressed frame for a legacy raw page.
+	featurePageCompression
+)
+
+type pageCodec uint8
+
+const (
+	pageCodecZstd pageCodec = iota + 1
+)
+
+type pageKind uint8
+
+const (
+	pageEntity pageKind = iota + 1
+	pageDictionary
+	pagePostings
+	pageForwardColumn
+	pageDatasetMapping
+)
+
+type pageDescriptor struct {
+	kind          pageKind
+	codec         pageCodec
+	keyID         uint32 // ^uint32(0) denotes a page that is not key-specific.
+	offset        int64
+	length        uint32 // Encoded/stored length.
+	decodedLength uint32
+	crc32         uint32 // Checksum of encoded/stored bytes.
+}
+
+func appendUvarint(dst []byte, n uint64) []byte {
+	var b [binary.MaxVarintLen64]byte
+	l := binary.PutUvarint(b[:], n)
+	return append(dst, b[:l]...)
+}
+
+func appendBytes(dst []byte, value []byte) []byte {
+	dst = appendUvarint(dst, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func appendString(dst []byte, value string) []byte { return appendBytes(dst, []byte(value)) }
+
+func readUvarint(r *bytes.Reader) (uint64, error) {
+	n, err := binary.ReadUvarint(r)
+	if err != nil {
+		return 0, fmt.Errorf("reading varint: %w", err)
+	}
+	return n, nil
+}
+
+func readBytes(r *bytes.Reader, limit int) ([]byte, error) {
+	n, err := readUvarint(r)
+	if err != nil {
+		return nil, err
+	}
+	if n > uint64(limit) || n > uint64(r.Len()) {
+		return nil, fmt.Errorf("invalid byte length %d", n)
+	}
+	value := make([]byte, n)
+	if _, err := io.ReadFull(r, value); err != nil {
+		return nil, fmt.Errorf("reading bytes: %w", err)
+	}
+	return value, nil
+}
+
+func readString(r *bytes.Reader, limit int) (string, error) {
+	value, err := readBytes(r, limit)
+	if err != nil {
+		return "", err
+	}
+	return string(value), nil
+}
+
+func encodeDirectory(metadata Metadata, keys []Key, pages []pageDescriptor) []byte {
+	b := make([]byte, 0, 64+len(metadata.Tenant)+len(metadata.EntityKind))
+	b = append(b, byte(metadata.TimeSemantics))
+	b = appendString(b, metadata.Tenant)
+	b = appendString(b, metadata.EntityKind)
+	// The scoped name directory is deliberately ahead of data pages. It is
+	// sufficient for unfiltered full-coverage name discovery.
+	b = appendUvarint(b, uint64(len(keys)))
+	for _, key := range keys {
+		b = append(b, byte(key.Scope))
+		b = appendString(b, key.Name)
+	}
+	b = appendUvarint(b, uint64(len(pages)))
+	for _, page := range pages {
+		var fixed [32]byte
+		fixed[0] = byte(page.kind)
+		fixed[1] = byte(page.codec)
+		binary.LittleEndian.PutUint32(fixed[4:8], page.keyID)
+		binary.LittleEndian.PutUint64(fixed[8:16], uint64(page.offset))
+		binary.LittleEndian.PutUint32(fixed[16:20], page.length)
+		binary.LittleEndian.PutUint32(fixed[20:24], page.decodedLength)
+		binary.LittleEndian.PutUint32(fixed[24:28], page.crc32)
+		b = append(b, fixed[:]...)
+	}
+	return b
+}
+
+func decodeDirectory(b []byte) (Metadata, []Key, []pageDescriptor, error) {
+	r := bytes.NewReader(b)
+	semantics, err := r.ReadByte()
+	if err != nil {
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory time semantics: %w", err)
+	}
+	tenant, err := readString(r, 1<<20)
+	if err != nil {
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory tenant: %w", err)
+	}
+	kind, err := readString(r, 1024)
+	if err != nil {
+		return Metadata{}, nil, nil, fmt.Errorf("reading directory entity kind: %w", err)
+	}
+	keyCount, err := readUvarint(r)
+	if err != nil || keyCount > 1<<20 {
+		return Metadata{}, nil, nil, fmt.Errorf("invalid attribute key count %d", keyCount)
+	}
+	keys := make([]Key, keyCount)
+	for i := range keys {
+		scope, err := r.ReadByte()
+		if err != nil {
+			return Metadata{}, nil, nil, fmt.Errorf("reading attribute key %d scope: %w", i, err)
+		}
+		name, err := readString(r, 1<<20)
+		if err != nil {
+			return Metadata{}, nil, nil, fmt.Errorf("reading attribute key %d name: %w", i, err)
+		}
+		keys[i] = Key{Scope: Scope(scope), Name: name}
+		if err := keys[i].valid(); err != nil || (i > 0 && compareKey(keys[i-1], keys[i]) >= 0) {
+			return Metadata{}, nil, nil, fmt.Errorf("invalid attribute key %d", i)
+		}
+	}
+	count, err := readUvarint(r)
+	if err != nil || count == 0 || count > 1<<20 {
+		return Metadata{}, nil, nil, fmt.Errorf("invalid page count %d", count)
+	}
+	pages := make([]pageDescriptor, count)
+	for i := range pages {
+		var fixed [32]byte
+		if _, err := io.ReadFull(r, fixed[:]); err != nil {
+			return Metadata{}, nil, nil, fmt.Errorf("reading compressed page descriptor: %w", err)
+		}
+		if fixed[2] != 0 || fixed[3] != 0 || binary.LittleEndian.Uint32(fixed[28:32]) != 0 {
+			return Metadata{}, nil, nil, fmt.Errorf("invalid compressed page descriptor %d reserved bytes", i)
+		}
+		pages[i] = pageDescriptor{
+			kind: pageKind(fixed[0]), codec: pageCodec(fixed[1]), keyID: binary.LittleEndian.Uint32(fixed[4:8]),
+			offset: int64(binary.LittleEndian.Uint64(fixed[8:16])), length: binary.LittleEndian.Uint32(fixed[16:20]),
+			decodedLength: binary.LittleEndian.Uint32(fixed[20:24]), crc32: binary.LittleEndian.Uint32(fixed[24:28]),
+		}
+		if (pages[i].kind != pageEntity && pages[i].kind != pageDictionary && pages[i].kind != pagePostings && pages[i].kind != pageForwardColumn && pages[i].kind != pageDatasetMapping) ||
+			pages[i].offset < headerSize || pages[i].length == 0 || pages[i].length > maxPageLen || pages[i].decodedLength > maxPageLen || pages[i].codec != pageCodecZstd {
+			return Metadata{}, nil, nil, fmt.Errorf("invalid page descriptor %d", i)
+		}
+	}
+	if r.Len() != 0 {
+		return Metadata{}, nil, nil, fmt.Errorf("trailing directory bytes")
+	}
+	metadata := Metadata{Tenant: tenant, EntityKind: kind, TimeSemantics: TimeSemantics(semantics)}
+	if err := metadata.valid(); err != nil {
+		return Metadata{}, nil, nil, err
+	}
+	return metadata, keys, pages, nil
+}
+
+func checksum(b []byte) uint32 { return crc32.ChecksumIEEE(b) }

@@ -46,6 +46,10 @@ message InvokeOptions {
   // Run final report processing after this invocation completes. Set only for
   // the root invocation; child invocations must clear this flag.
   bool finalize = 3;
+  // Use AttributeIndexV1 to resolve profile datasets when it is available.
+  // This is an experimental, per-request opt-in; blocks without an attribute
+  // index continue to resolve through the tenant-wide TSDB index.
+  bool use_attribute_index = 4;
 }
 
 message InvokeRequest {
