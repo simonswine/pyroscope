@@ -27,7 +27,9 @@ func init() {
 func queryLabelNames(q *queryContext, query *queryv1.Query) (*queryv1.Report, error) {
 	var names []string
 	var err error
-	if len(q.req.matchers) == 0 {
+	if block.DatasetFormat(q.ds.Metadata().Format) == block.DatasetFormat2 {
+		names, err = attributeLabelNames(q.ctx, q.ds.AttributeIndex(), q.req.matchers)
+	} else if len(q.req.matchers) == 0 {
 		names, err = q.ds.Index().LabelNames()
 	} else {
 		names, err = labelNamesForMatchers(q.ds.Index(), q.req.matchers)

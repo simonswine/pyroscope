@@ -19,6 +19,7 @@ import (
 	gprofile "github.com/google/pprof/profile"
 	"github.com/grafana/dskit/flagext"
 	prommodel "github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,7 @@ import (
 	"github.com/grafana/pyroscope/api/gen/proto/go/ingester/v1/ingesterv1connect"
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	typesv1 "github.com/grafana/pyroscope/api/gen/proto/go/types/v1"
+	"github.com/grafana/pyroscope/v2/pkg/attributeindex"
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	"github.com/grafana/pyroscope/v2/pkg/metastore"
@@ -310,15 +312,16 @@ func TestDatasetMinMaxTime(t *testing.T) {
 
 	block := <-metas
 
-	// Datasets in the block: real datasets are sorted by tenant+service; a
-	// per-tenant dataset index pseudo-dataset is appended after the last
-	// real dataset of each tenant.
+	// Datasets in the block: real datasets are sorted by tenant+service; both
+	// tenant-wide pseudo-datasets are appended after the tenant's real datasets.
 	expected := [][2]int{
 		{10, 1337}, // ta/svc1
 		{10, 1337}, // ta dataset index
+		{10, 1337}, // ta attribute index
 		{239, 420}, // tb/svc1
 		{420, 421}, // tb/svc2
 		{239, 421}, // tb dataset index
+		{239, 421}, // tb attribute index
 	}
 
 	require.Equal(t, len(expected), len(block.Datasets))
@@ -331,12 +334,10 @@ func TestDatasetMinMaxTime(t *testing.T) {
 }
 
 // TestSegmentTenantDatasetIndexes flushes a multi-tenant segment and
-// inspects the per-tenant Format1 dataset_index pseudo-datasets in the
-// resulting block. For each tenant it verifies that the dataset_index
-// encodes one entry per real dataset of the tenant, and that each
-// entry's chunk SeriesIndex is the global position of the real dataset
-// within meta.Datasets (this is what the query backend uses to resolve
-// datasets from a Format1 lookup).
+// inspects the per-tenant TSDB and attribute-index pseudo-datasets in the
+// resulting block. For each tenant it verifies that the TSDB index encodes one
+// entry per real dataset and that both indexes resolve global positions of only
+// that tenant's real datasets.
 func TestSegmentTenantDatasetIndexes(t *testing.T) {
 	l := test.NewTestingLogger(t)
 	bucket := memory.NewInMemBucket()
@@ -375,6 +376,7 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 	// meta.Datasets and find each tenant's Format1 pseudo-dataset.
 	realByTenant := map[string][]int{}
 	indexByTenant := map[string]*metastorev1.Dataset{}
+	attributeIndexByTenant := map[string]*metastorev1.Dataset{}
 	for i, ds := range meta.Datasets {
 		tenantName := meta.StringTable[ds.Tenant]
 		switch block.DatasetFormat(ds.Format) {
@@ -383,11 +385,15 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 		case block.DatasetFormat1:
 			require.Nil(t, indexByTenant[tenantName], "more than one Format1 dataset for tenant %s", tenantName)
 			indexByTenant[tenantName] = ds
+		case block.DatasetFormat2:
+			require.Nil(t, attributeIndexByTenant[tenantName], "more than one Format2 dataset for tenant %s", tenantName)
+			attributeIndexByTenant[tenantName] = ds
 		}
 	}
 	require.Equal(t, []int{0, 1}, realByTenant["ta"], "expected ta to have two real datasets")
 	require.Len(t, realByTenant["tb"], 1, "expected tb to have one real dataset")
 	require.Len(t, indexByTenant, 2, "expected one Format1 dataset per tenant")
+	require.Len(t, attributeIndexByTenant, 2, "expected one Format2 dataset per tenant")
 
 	// Open the block and inspect each tenant's dataset_index.
 	obj := block.NewObject(phlareobj.NewBucket(bucket), meta)
@@ -420,6 +426,114 @@ func TestSegmentTenantDatasetIndexes(t *testing.T) {
 			slices.Sort(seriesIndices)
 			assert.Equal(t, realByTenant[tenantName], seriesIndices,
 				"dataset_index series must point to the tenant's real datasets via global positions")
+		})
+	}
+
+	for tenantName, indexDS := range attributeIndexByTenant {
+		t.Run(tenantName, func(t *testing.T) {
+			ds := block.NewDataset(indexDS, obj)
+			t.Cleanup(func() { _ = ds.Close() })
+			require.NoError(t, ds.Open(context.Background(), block.SectionAttributeIndex))
+
+			ids, err := ds.AttributeIndex().DatasetIDs(context.Background(), []attributeindex.Matcher{{
+				Key:      attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: model.LabelNameServiceName},
+				Operator: attributeindex.MatchRegexp,
+				Regexp:   ".*",
+			}})
+			require.NoError(t, err)
+			assert.Equal(t, uint32s(realByTenant[tenantName]), ids,
+				"attribute index must resolve to this tenant's real global dataset positions")
+		})
+	}
+}
+
+// TestSegmentAttributeIndexLookupParity proves the lookup contract against the
+// tenant-wide TSDB index rather than against expected dataset positions alone.
+// In particular, the last selector combines labels present on different series
+// in the same dataset; it must not produce a dataset match.
+func TestSegmentAttributeIndexLookupParity(t *testing.T) {
+	l := test.NewTestingLogger(t)
+	bucket := memory.NewInMemBucket()
+	metas := make(chan *metastorev1.BlockMeta, 1)
+	client := mockmetastorev1.NewMockIndexServiceClient(t)
+	client.On("AddBlock", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { metas <- args.Get(1).(*metastorev1.AddBlockRequest).Block }).
+		Return(new(metastorev1.AddBlockResponse), nil)
+	sw := newSegmentWriter(l, newSegmentMetrics(nil), memdb.NewHeadMetricsWithPrefix(nil, ""), defaultTestConfig(), validation.MockDefaultOverrides(), bucket, client)
+	defer sw.stop()
+
+	// api has two persisted series in one dataset. The mode/profile-type
+	// conjunction below deliberately selects neither of them.
+	apiCPU := cpuProfile(1, 100, "api", "cpu").WithLabels("mode", "cpu")
+	apiMemory := memProfile(1, 101, "api", "memory").WithLabels("mode", "memory")
+	worker := cpuProfile(1, 102, "worker", "worker").WithLabels("mode", "cpu")
+	_ = sw.ingest(1, func(head segmentIngest) {
+		head.ingest("tenant-a", apiCPU.Profile, apiCPU.UUID, apiCPU.Labels, apiCPU.Annotations)
+		head.ingest("tenant-a", apiMemory.Profile, apiMemory.UUID, apiMemory.Labels, apiMemory.Annotations)
+		head.ingest("tenant-a", worker.Profile, worker.UUID, worker.Labels, worker.Annotations)
+	})
+	meta := <-metas
+	obj := block.NewObject(phlareobj.NewBucket(bucket), meta)
+	t.Cleanup(func() { _ = obj.Close() })
+	require.NoError(t, obj.Open(context.Background()))
+
+	var tsdbDataset, attributeDataset *metastorev1.Dataset
+	for _, dataset := range meta.Datasets {
+		if meta.StringTable[dataset.Tenant] != "tenant-a" {
+			continue
+		}
+		switch block.DatasetFormat(dataset.Format) {
+		case block.DatasetFormat1:
+			tsdbDataset = dataset
+		case block.DatasetFormat2:
+			attributeDataset = dataset
+		}
+	}
+	require.NotNil(t, tsdbDataset)
+	require.NotNil(t, attributeDataset)
+	tsdb := block.NewDataset(tsdbDataset, obj)
+	t.Cleanup(func() { _ = tsdb.Close() })
+	require.NoError(t, tsdb.Open(context.Background(), block.SectionDatasetIndex))
+	attributes := block.NewDataset(attributeDataset, obj)
+	t.Cleanup(func() { _ = attributes.Close() })
+	require.NoError(t, attributes.Open(context.Background(), block.SectionAttributeIndex))
+
+	tests := []struct {
+		name      string
+		attribute []attributeindex.Matcher
+		tsdb      []*labels.Matcher
+	}{
+		{"equality", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "service_name"}, Operator: attributeindex.MatchEqual, Value: attributeindex.StringValue("api")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "service_name", "api")}},
+		{"regexp", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "service_name"}, Operator: attributeindex.MatchRegexp, Regexp: "api|worker"}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchRegexp, "service_name", "api|worker")}},
+		{"negative", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "service_name"}, Operator: attributeindex.MatchNotEqual, Value: attributeindex.StringValue("api")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchNotEqual, "service_name", "api")}},
+		{"missing equals empty", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "missing"}, Operator: attributeindex.MatchEqual, Value: attributeindex.StringValue("")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "missing", "")}},
+		{"missing does not equal empty", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "missing"}, Operator: attributeindex.MatchNotEqual, Value: attributeindex.StringValue("")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchNotEqual, "missing", "")}},
+		{"no match", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "service_name"}, Operator: attributeindex.MatchEqual, Value: attributeindex.StringValue("none")}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "service_name", "none")}},
+		{"cross-series conjunction", []attributeindex.Matcher{{Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "mode"}, Operator: attributeindex.MatchEqual, Value: attributeindex.StringValue("memory")}, {Key: attributeindex.Key{Scope: attributeindex.ScopeLegacy, Name: "__profile_type__"}, Operator: attributeindex.MatchRegexp, Regexp: "process_cpu:.*"}}, []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "mode", "memory"), labels.MustNewMatcher(labels.MatchRegexp, "__profile_type__", "process_cpu:.*")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := attributes.AttributeIndex().DatasetIDs(context.Background(), tc.attribute)
+			require.NoError(t, err)
+			postings, err := phlaredb.PostingsForMatchers(tsdb.Index(), nil, tc.tsdb...)
+			require.NoError(t, err)
+			want := make([]uint32, 0)
+			chunks := make([]tsdbindex.ChunkMeta, 1)
+			for postings.Next() {
+				_, err = tsdb.Index().Series(postings.At(), nil, &chunks)
+				require.NoError(t, err)
+				require.Len(t, chunks, 1)
+				want = append(want, chunks[0].SeriesIndex)
+			}
+			require.NoError(t, postings.Err())
+			slices.Sort(want)
+			want = slices.Compact(want)
+			assert.Equal(t, want, got)
+			for _, id := range got {
+				require.Less(t, int(id), len(meta.Datasets))
+				assert.Equal(t, block.DatasetFormat0, block.DatasetFormat(meta.Datasets[id].Format))
+				assert.Equal(t, "tenant-a", meta.StringTable[meta.Datasets[id].Tenant])
+			}
 		})
 	}
 }
@@ -1094,6 +1208,14 @@ func isSegmentPath(p string) bool {
 		fs[0] == block.DirNameSegment &&
 		fs[2] == block.DirNameAnonTenant &&
 		fs[4] == block.FileNameDataObject
+}
+
+func uint32s(ids []int) []uint32 {
+	result := make([]uint32, len(ids))
+	for i, id := range ids {
+		result[i] = uint32(id)
+	}
+	return result
 }
 
 func hasUnsymbolizedLabel(t *testing.T, block *metastorev1.BlockMeta) bool {

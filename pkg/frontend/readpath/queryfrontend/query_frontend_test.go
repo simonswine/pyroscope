@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 
 	metastorev1 "github.com/grafana/pyroscope/api/gen/proto/go/metastore/v1"
 	querierv1 "github.com/grafana/pyroscope/api/gen/proto/go/querier/v1"
@@ -108,6 +109,46 @@ func Test_QueryFrontend_QueryMetadata(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, test.response.Blocks, blocks)
 	}
+}
+
+func Test_QueryFrontend_QueryMetadata_AttributeIndex(t *testing.T) {
+	metadataClient := new(mockmetastorev1.MockMetadataQueryServiceClient)
+	ctx := WithAttributeIndex(user.InjectOrgID(context.Background(), "org"), true)
+	frontend := &QueryFrontend{metadataQueryClient: metadataClient}
+
+	attribute := &metastorev1.BlockMeta{
+		Id: "block", StringTable: []string{"", "org"},
+		Datasets: []*metastorev1.Dataset{{Format: 2, Tenant: 1}},
+	}
+	tsdb := &metastorev1.BlockMeta{
+		Id: "block", StringTable: []string{"", "org"},
+		Datasets: []*metastorev1.Dataset{{Format: 1, Tenant: 1}},
+	}
+	var requests []*metastorev1.QueryMetadataRequest
+	metadataClient.On("QueryMetadata", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			requests = append(requests, args.Get(1).(*metastorev1.QueryMetadataRequest).CloneVT())
+		}).
+		Return(func(_ context.Context, req *metastorev1.QueryMetadataRequest, _ ...grpc.CallOption) *metastorev1.QueryMetadataResponse {
+			if req.Query == `{__tenant_dataset__="attribute_index"}` {
+				return &metastorev1.QueryMetadataResponse{Blocks: []*metastorev1.BlockMeta{attribute}}
+			}
+			return &metastorev1.QueryMetadataResponse{Blocks: []*metastorev1.BlockMeta{tsdb}}
+		}, nil).Twice()
+
+	blocks, err := frontend.QueryMetadata(ctx, &queryv1.QueryRequest{LabelSelector: `{service_name!="api"}`})
+	require.NoError(t, err)
+	require.Len(t, requests, 2)
+	assert.Equal(t, `{__tenant_dataset__="attribute_index"}`, requests[0].Query)
+	assert.Equal(t, `{__tenant_dataset__="dataset_tsdb_index"}`, requests[1].Query)
+	require.Len(t, blocks, 1)
+	assert.Equal(t, []uint32{2, 1}, []uint32{blocks[0].Datasets[0].Format, blocks[0].Datasets[1].Format})
+}
+
+func TestAttributeIndexHeader(t *testing.T) {
+	assert.True(t, headerRequestsAttributeIndex(map[string][]string{AttributeIndexHeader: {"true"}}))
+	assert.True(t, headerRequestsAttributeIndex(map[string][]string{"x-pyroscope-use-attribute-index": {"1"}}))
+	assert.False(t, headerRequestsAttributeIndex(map[string][]string{AttributeIndexHeader: {"false"}}))
 }
 
 func Test_QueryFrontend_LabelNames_WithFiltering(t *testing.T) {

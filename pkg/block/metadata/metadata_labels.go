@@ -18,6 +18,7 @@ import (
 const (
 	LabelNameTenantDataset     = "__tenant_dataset__"
 	LabelValueDatasetTSDBIndex = "dataset_tsdb_index"
+	LabelValueAttributeIndex   = "attribute_index"
 	LabelNameUnsymbolized      = "__unsymbolized__"
 )
 
@@ -89,6 +90,29 @@ func (lb *LabelBuilder) Build() []int32 {
 	lb.labels = lb.labels[:0]
 	clear(lb.seen)
 	return c
+}
+
+// DatasetHasLabel reports whether one of a dataset's label sets contains the
+// exact name/value pair. Invalid string-table references or malformed label
+// sets do not match.
+func DatasetHasLabel(ds *metastorev1.Dataset, strings []string, name, value string) bool {
+	found := false
+	for off := 0; off < len(ds.Labels); {
+		pairs := ds.Labels[off]
+		off++
+		if pairs < 0 || int(pairs) > (len(ds.Labels)-off)/2 {
+			return false
+		}
+		for range pairs {
+			key, val := ds.Labels[off], ds.Labels[off+1]
+			off += 2
+			if key < 0 || val < 0 || int(key) >= len(strings) || int(val) >= len(strings) {
+				return false
+			}
+			found = found || (strings[key] == name && strings[val] == value)
+		}
+	}
+	return found
 }
 
 func FindDatasets(md *metastorev1.BlockMeta, matchers ...*labels.Matcher) goiter.Seq[*metastorev1.Dataset] {

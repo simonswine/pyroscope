@@ -207,6 +207,7 @@ func (q *QueryFrontend) doQuery(
 	span.SetTag("profiles_bytes", weight.ProfilesBytes)
 	span.SetTag("tsdb_bytes", weight.TSDBBytes)
 	span.SetTag("symbols_bytes", weight.SymbolsBytes)
+	span.SetTag("attribute_index_bytes", weight.AttributeIndexBytes)
 	span.SetTag("datasets_count", datasetsCount)
 	span.SetTag("index_lookup_blocks", weight.IndexLookupCount)
 	startTime := time.UnixMilli(req.StartTime)
@@ -222,6 +223,7 @@ func (q *QueryFrontend) doQuery(
 		"profiles_bytes", humanize.Bytes(weight.ProfilesBytes),
 		"tsdb_bytes", humanize.Bytes(weight.TSDBBytes),
 		"symbols_bytes", humanize.Bytes(weight.SymbolsBytes),
+		"attribute_index_bytes", humanize.Bytes(weight.AttributeIndexBytes),
 		"datasets", datasetsCount,
 		"index_lookup_blocks", weight.IndexLookupCount,
 		"start_time", startTime.UTC().Format(time.RFC3339),
@@ -261,6 +263,7 @@ func (q *QueryFrontend) doQuery(
 		Options: &queryv1.InvokeOptions{
 			SanitizeOnMerge:    q.limits.QuerySanitizeOnMerge(tenants[0]),
 			CollectDiagnostics: collectDiagnostics,
+			UseAttributeIndex:  useAttributeIndex(ctx),
 		},
 		QueryPlan: p,
 		Query:     req.Query,
@@ -352,6 +355,28 @@ func (q *QueryFrontend) QueryMetadata(
 			Value: metadata.LabelValueDatasetTSDBIndex,
 			Type:  labels.MatchEqual,
 		}}
+
+		if useAttributeIndex(ctx) {
+			// Query both index types. Attribute indexes are preferred by the
+			// backend, while TSDB indexes keep old or mixed-version blocks
+			// queryable when their attribute index is absent.
+			matchers[0].Value = metadata.LabelValueAttributeIndex
+			query.Query = matchersToLabelSelector(matchers)
+			attribute, err := q.metadataQueryClient.QueryMetadata(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+			matchers[0].Value = metadata.LabelValueDatasetTSDBIndex
+			query.Query = matchersToLabelSelector(matchers)
+			tsdb, err := q.metadataQueryClient.QueryMetadata(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+			blocks := mergeIndexMetadata(attribute.Blocks, tsdb.Blocks)
+			span.SetTag("blocks_count", len(blocks))
+			span.SetTag("attribute_index_requested", true)
+			return blocks, nil
+		}
 	}
 
 	query.Query = matchersToLabelSelector(matchers)
@@ -362,4 +387,38 @@ func (q *QueryFrontend) QueryMetadata(
 	span.SetTag("blocks_count", len(md.Blocks))
 
 	return md.Blocks, nil
+}
+
+// mergeIndexMetadata combines the separate attribute-index and TSDB-index
+// metadata lookups. Both responses describe the same immutable block and
+// retain its full string table; only the selected pseudo-datasets differ.
+func mergeIndexMetadata(attribute, tsdb []*metastorev1.BlockMeta) []*metastorev1.BlockMeta {
+	blocks := make([]*metastorev1.BlockMeta, 0, len(attribute)+len(tsdb))
+	byID := make(map[string]*metastorev1.BlockMeta, len(attribute)+len(tsdb))
+	add := func(metas []*metastorev1.BlockMeta) {
+		for _, meta := range metas {
+			merged, ok := byID[meta.Id]
+			if !ok {
+				merged = meta.CloneVT()
+				merged.Datasets = nil
+				byID[meta.Id] = merged
+				blocks = append(blocks, merged)
+			}
+			existing := make(map[string]struct{}, len(merged.Datasets))
+			for _, dataset := range merged.Datasets {
+				existing[fmt.Sprintf("%d/%d/%d", dataset.Format, dataset.Tenant, dataset.Name)] = struct{}{}
+			}
+			for _, dataset := range meta.Datasets {
+				key := fmt.Sprintf("%d/%d/%d", dataset.Format, dataset.Tenant, dataset.Name)
+				if _, ok := existing[key]; ok {
+					continue
+				}
+				existing[key] = struct{}{}
+				merged.Datasets = append(merged.Datasets, dataset)
+			}
+		}
+	}
+	add(attribute)
+	add(tsdb)
+	return blocks
 }

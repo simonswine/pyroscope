@@ -37,20 +37,29 @@ type FlushedHead struct {
 	datasetIndexSeries []*profileSeries
 }
 
-type datasetIndexWriter interface {
-	AddSeries(idx uint32, labels phlaremodel.Labels, fp model.Fingerprint)
-}
+// DatasetIndexSeriesVisitor consumes a complete persisted series label set
+// and its fingerprint. Returning an error stops iteration immediately.
+//
+// Flushed heads retain these labels after ingestion normalization and
+// profile-type expansion. Consumers building tenant-wide indexes must use this
+// visitor rather than incoming ingestion labels so they index the same series
+// representation that was persisted in the dataset.
+type DatasetIndexSeriesVisitor func(labels phlaremodel.Labels, fp model.Fingerprint) error
 
-// WriteDatasetIndex feeds the flushed head's series (labels + fingerprint)
-// into the given dataset index writer, attributing every series to the
-// supplied dataset index (the dataset's global position in the block).
-// It is safe to call concurrently with other heads' writes only if the
-// writer itself is externally synchronised; segment flushes call it
-// serially in dataset (tenant+service) order.
-func (f *FlushedHead) WriteDatasetIndex(w datasetIndexWriter, idx uint32) {
-	for _, s := range f.datasetIndexSeries {
-		w.AddSeries(idx, s.lbs, s.fp)
+// VisitDatasetIndexSeries visits the flushed head's complete persisted series
+// labels and fingerprints. Segment flushes call it serially in dataset
+// (tenant+service) order; callers that use it concurrently must synchronize
+// their visitor themselves.
+func (f *FlushedHead) VisitDatasetIndexSeries(visitor DatasetIndexSeriesVisitor) error {
+	if visitor == nil {
+		return fmt.Errorf("dataset index series visitor must not be nil")
 	}
+	for _, s := range f.datasetIndexSeries {
+		if err := visitor(s.lbs, s.fp); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type Head struct {

@@ -4,6 +4,7 @@ import (
 	"connectrpc.com/connect"
 
 	connectapi "github.com/grafana/pyroscope/v2/pkg/api/connect"
+	queryfrontend "github.com/grafana/pyroscope/v2/pkg/frontend/readpath/queryfrontend"
 	querydiagnostics "github.com/grafana/pyroscope/v2/pkg/frontend/readpath/queryfrontend/diagnostics"
 	"github.com/grafana/pyroscope/v2/pkg/tenant"
 	"github.com/grafana/pyroscope/v2/pkg/util"
@@ -63,7 +64,7 @@ func (a *API) connectOptionsAuthLogDiagnosticsRecovery() []connect.HandlerOption
 	return append(connectapi.DefaultHandlerOptions(),
 		a.connectInterceptorAuth(),
 		a.connectInterceptorLog(),
-		connect.WithInterceptors(querydiagnostics.Interceptor),
+		connect.WithInterceptors(querydiagnostics.Interceptor, queryfrontend.AttributeIndexInterceptor),
 		connectInterceptorRecovery(),
 	)
 }
