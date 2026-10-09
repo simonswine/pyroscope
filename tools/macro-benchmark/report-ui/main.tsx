@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useState } from 'react';
-import { FlameGraph } from './solo/index.mjs';
-import './solo/index.css';
+import { FlameGraph } from '@simonswine/grafana-flamegraph';
+import '@simonswine/grafana-flamegraph/style.css';
 import type { ReportFrame } from './frame';
 
 type Tree = { name: string; self: number; total: number; children?: Tree[] };
