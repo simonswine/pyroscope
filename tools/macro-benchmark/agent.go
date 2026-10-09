@@ -110,9 +110,10 @@ func (s *agentServer) hello(h agentHello) (agentGreeting, error) {
 }
 
 type agentRunSummary struct {
-	ID    string `json:"id"`
-	Phase string `json:"phase"`
-	Error string `json:"error,omitempty"`
+	ID       string       `json:"id"`
+	Phase    string       `json:"phase"`
+	Error    string       `json:"error,omitempty"`
+	Progress *runProgress `json:"progress,omitempty"`
 }
 
 func (s *agentServer) runSummary(id string) (agentRunSummary, error) {
@@ -167,7 +168,7 @@ func (s *agentServer) runSummary(id string) (agentRunSummary, error) {
 				return agentRunSummary{}, err
 			}
 			if latest.Phase == "completed" || latest.Phase == "failed" || latest.Phase == "stopped" {
-				return agentRunSummary{ID: id, Phase: latest.Phase, Error: latest.Error}, nil
+				return agentRunSummary{ID: id, Phase: latest.Phase, Error: latest.Error, Progress: latest.Progress}, nil
 			}
 			return agentRunSummary{ID: id, Phase: "interrupted", Error: "worker unit stopped without publishing terminal status"}, nil
 		}
@@ -184,7 +185,7 @@ func (s *agentServer) runSummary(id string) (agentRunSummary, error) {
 			return agentRunSummary{ID: id, Phase: "starting"}, nil
 		}
 	}
-	return agentRunSummary{ID: id, Phase: status.Phase, Error: status.Error}, nil
+	return agentRunSummary{ID: id, Phase: status.Phase, Error: status.Error, Progress: status.Progress}, nil
 }
 
 func (s *agentServer) listRuns() ([]agentRunSummary, error) {

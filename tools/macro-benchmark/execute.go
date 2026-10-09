@@ -56,6 +56,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	var observerCancel context.CancelFunc
 	var observerDone chan struct{}
 	defer func() {
+		reportProgress(ctx, "collecting artifacts and stopping processes", time.Time{})
 		if observerCancel != nil {
 			observerCancel()
 			<-observerDone
@@ -80,6 +81,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 			status["error"] = runErr.Error()
 		}
 		runErr = errors.Join(runErr, writeYAML(filepath.Join(paths.Results, "status.yaml"), status), runLog.Sync())
+		reportProgress(ctx, "archiving results", time.Time{})
 		if err := archiveDirectoryAtomic(paths.Results, paths.Archive); err != nil {
 			runErr = errors.Join(runErr, err)
 		} else {
@@ -135,6 +137,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	access, secret := credentials.AccessKey, credentials.SecretKey
 	const minioURL = "http://127.0.0.1:9000"
 	const bucket = "macro-benchmark"
+	reportProgress(ctx, "starting MinIO", time.Time{})
 	log.Print("starting pgsty MinIO on CPUs 2-3")
 	minio, err = startProcess("taskset", []string{"-c", "2-3", filepath.Join(paths.Bundle, "minio"), "server", "--address", "127.0.0.1:9000", "--console-address", "127.0.0.1:9001", "--quiet", paths.Minio},
 		[]string{"MINIO_ROOT_USER=" + access, "MINIO_ROOT_PASSWORD=" + secret, "MINIO_PROMETHEUS_AUTH_TYPE=public", "GOMEMLIMIT=8GiB"}, filepath.Join(paths.Results, "minio.log"))
@@ -151,6 +154,7 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 		return err
 	}
 	clusterEnv := []string{"MINIO_ENDPOINT=127.0.0.1:9000", "MINIO_BUCKET=" + bucket, "MINIO_ROOT_USER=" + access, "MINIO_ROOT_PASSWORD=" + secret, "TMPDIR=" + paths.Cluster}
+	reportProgress(ctx, "starting ingest cluster", time.Time{})
 	log.Print("starting ingest cluster on CPUs 4-6")
 	cluster, err = startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints", filepath.Join(paths.Bundle, "endpoints.yaml"), "-cpu-profile=" + replayCPU, "-mem-profile=" + replayHeap},
 		append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(paths.Results, "cluster-ingest.log"))
@@ -182,16 +186,19 @@ func executeWithPaths(ctx context.Context, paths RunPaths) (runErr error) {
 	if err != nil {
 		return err
 	}
+	reportProgress(ctx, "settling after replay", time.Now().Add(time.Duration(inputs.SettleSeconds)*time.Second))
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(time.Duration(inputs.SettleSeconds) * time.Second):
 	}
+	reportProgress(ctx, "checking compaction settlement", time.Time{})
 	if err := observePaths(ctx, []string{"-settle", "-output", filepath.Join(paths.Results, "metrics")}, paths); err != nil {
 		return err
 	}
 	// Preserve WAL/snapshots and port assignments, but discard the ingest runtime.
 	// Each benchmark/version will start fresh write and query processes.
+	reportProgress(ctx, "stopping ingest cluster", time.Time{})
 	stopCtx, stop := context.WithTimeout(context.Background(), 90*time.Second)
 	err = errors.Join(cluster.stop(stopCtx), cluster.err)
 	stop()

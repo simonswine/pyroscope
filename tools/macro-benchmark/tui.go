@@ -604,6 +604,10 @@ func tuiDashboard(width, height int, root string, states []sessionState, selecte
 			{"Measurement", terminalText(fmt.Sprintf("%d repetitions · benchtime %s", s.Config.Inputs.Count, s.Config.Inputs.Benchtime), 0)},
 			{"Results", terminalText(filepath.Join(s.Config.Results, s.Config.RunID), 0)},
 		}
+		if s.Progress != nil && s.Phase == "running" {
+			stage, timing := progressRows(s.Progress, s.Phase, time.Now())
+			details = append(details, table.Row{"Progress", terminalText(stage, 0)}, table.Row{"Timing", terminalText(timing, 0)})
+		}
 		if s.Kind == "rerun" {
 			details = append(details, table.Row{"Storage owner", terminalText(s.StorageRunID, 0)})
 		}

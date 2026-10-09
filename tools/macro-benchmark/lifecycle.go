@@ -243,6 +243,7 @@ func stopSession(ctx context.Context, store *stateStore, state *sessionState) er
 	}
 	state.Phase = run.Phase
 	state.Error = run.Error
+	state.Progress = run.Progress
 	return store.save(state)
 }
 

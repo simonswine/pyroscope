@@ -116,6 +116,14 @@ stop replay or measurement. Reattaching reads the existing per-run worker status
 connection rather than starting another replay. Completed results download to
 a temporary name, are SHA256-verified and fsynced before being published locally.
 
+While following a running session, the selected-session panel shows the current
+stage, dataset or benchmark/version count, elapsed time, and stage-update age.
+Progress is checkpointed remotely and refreshed through the existing three-second
+poll. The post-replay settling delay shows a countdown; subsequent compaction
+settlement has no estimated duration. Stage-update age is not a worker heartbeat:
+a long replay or measurement can legitimately remain on the same stage. Workers
+started with older binaries report only their phase.
+
 A durable remote start marker prevents double ingestion. If the **remote worker
 itself** crashes or the host reboots, it is not automatically replayed into a
 partially populated tenant. Collect any available diagnostics and create a new

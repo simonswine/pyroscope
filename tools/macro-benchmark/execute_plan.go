@@ -24,7 +24,7 @@ func replayDatasets(ctx context.Context, paths RunPaths, inputs inputsConfig, pl
 		return nil, err
 	}
 	windows := map[string]replayWindow{}
-	for _, dataset := range plan.Datasets {
+	for i, dataset := range plan.Datasets {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -38,6 +38,7 @@ func replayDatasets(ctx context.Context, paths RunPaths, inputs inputsConfig, pl
 		}
 		name := "replay-" + dataset.Name + ".log"
 		window := replayWindow{Tenant: dataset.Tenant, Start: time.Now().UnixMilli()}
+		reportProgress(ctx, fmt.Sprintf("replaying dataset %d/%d · %s", i+1, len(plan.Datasets), dataset.Name), time.Time{})
 		log.Printf("replaying %s into tenant %s", dataset.Name, dataset.Tenant)
 		if err := runWorkload(ctx, paths, timeout, name, nil, filepath.Join(paths.Bundle, "profilecli"), args...); err != nil {
 			return nil, err
@@ -96,11 +97,12 @@ func runComparisons(ctx context.Context, paths RunPaths, inputs inputsConfig, pl
 	if err != nil {
 		return err
 	}
-	for _, execution := range executions {
+	for i, execution := range executions {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := runBenchmarkGroup(ctx, paths, inputs, execution, ingest, clusterEnv); err != nil {
+		groupCtx := context.WithValue(ctx, benchmarkProgressKey{}, fmt.Sprintf("benchmark %d/%d · %s · %s", i+1, len(executions), execution.Role, execution.Benchmark))
+		if err := runBenchmarkGroup(groupCtx, paths, inputs, execution, ingest, clusterEnv); err != nil {
 			return err
 		}
 	}
@@ -122,12 +124,14 @@ func runBenchmarkCluster(ctx context.Context, paths RunPaths, inputs inputsConfi
 		return err
 	}
 	cpu, heap := filepath.Join(root, "cpu.pprof"), filepath.Join(root, "heap.pprof")
+	reportBenchmarkProgress(ctx, "starting query cluster")
 	log.Printf("starting fresh query cluster: %s", relative)
 	p, err := startProcess("taskset", []string{"-c", "7-14", filepath.Join(paths.Bundle, "cluster-"+execution.Role), "-mode=query", "-metastore-address=" + ingest.MetastoreAddress, "-endpoints=" + manifest, "-cpu-profile=" + cpu, "-mem-profile=" + heap}, append(append([]string{}, clusterEnv...), "GOMEMLIMIT=33GiB"), filepath.Join(root, "cluster.log"))
 	if err != nil {
 		return err
 	}
 	defer func() {
+		reportBenchmarkProgress(ctx, "stopping query cluster")
 		// Exclude the query process from periodic snapshots before shutting down.
 		runErr = errors.Join(runErr, publishEndpoints(paths, ingest))
 		stopCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -153,9 +157,11 @@ func runBenchmarkCluster(ctx context.Context, paths RunPaths, inputs inputsConfi
 	if err := publishEndpoints(paths, combined); err != nil {
 		return err
 	}
+	reportBenchmarkProgress(ctx, "measuring")
 	if err := runWorkload(ctx, paths, 2*time.Hour, filepath.Join(relative, "bench.txt"), execution.queryEnv(inputs, query.QueryURL), filepath.Join(paths.Bundle, execution.Benchmark+".test"), benchmarkArgs(inputs)...); err != nil {
 		return err
 	}
+	reportBenchmarkProgress(ctx, "collecting metrics")
 	_, err = snapshot(ctx, filepath.Join(root, "metrics"), paths.Bundle)
 	return err
 }

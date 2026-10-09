@@ -31,13 +31,17 @@ func TestStartIntentNeverResubmitsTerminalRun(t *testing.T) {
 	if err := os.MkdirAll(paths.Worker, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicJSON(filepath.Join(paths.Worker, "status.json"), workerState{Phase: "completed"}); err != nil {
+	progress := &runProgress{Stage: "archiving results", StartedAt: time.Now().Add(-time.Minute).UTC(), UpdatedAt: time.Now().UTC()}
+	if err := atomicJSON(filepath.Join(paths.Worker, "status.json"), workerState{Phase: "completed", Progress: progress}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
 		run, err := s.startRun(m.RunID, prepared.Digest)
 		if err != nil || run.Phase != "completed" {
 			t.Fatalf("repeat %d: %+v %v", i, run, err)
+		}
+		if run.Progress == nil || *run.Progress != *progress {
+			t.Fatalf("progress lost during reconciliation: %+v", run.Progress)
 		}
 	}
 	if _, err := s.startRun(m.RunID, hex.EncodeToString(make([]byte, 32))); err == nil {

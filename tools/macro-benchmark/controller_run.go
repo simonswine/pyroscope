@@ -59,6 +59,7 @@ func followManaged(ctx context.Context, store *stateStore, state *sessionState) 
 	for {
 		state.Phase = run.Phase
 		state.Error = run.Error
+		state.Progress = run.Progress
 		if err := store.save(state); err != nil {
 			return err
 		}

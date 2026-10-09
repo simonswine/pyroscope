@@ -200,6 +200,7 @@ func executeRerun(ctx context.Context, paths RunPaths) (runErr error) {
 	startedAt := time.Now().UTC()
 	var minio *managedProcess
 	defer func() {
+		reportProgress(ctx, "collecting artifacts and stopping processes", time.Time{})
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		collectArtifacts(cleanupCtx, paths)
@@ -213,6 +214,7 @@ func executeRerun(ctx context.Context, paths RunPaths) (runErr error) {
 			result["error"] = runErr.Error()
 		}
 		runErr = errors.Join(runErr, writeYAML(filepath.Join(paths.Results, "status.yaml"), result))
+		reportProgress(ctx, "archiving results", time.Time{})
 		if err := archiveDirectoryAtomic(paths.Results, paths.Archive); err != nil {
 			runErr = errors.Join(runErr, err)
 		} else {
@@ -231,6 +233,7 @@ func executeRerun(ctx context.Context, paths RunPaths) (runErr error) {
 	}()
 	const minioURL = "http://127.0.0.1:9000"
 	const bucket = "macro-benchmark"
+	reportProgress(ctx, "reopening owner MinIO storage", time.Time{})
 	log.Print("reopening owner MinIO storage (no bucket creation or replay)")
 	minio, err = startProcess("taskset", []string{"-c", "2-3", filepath.Join(owner.Bundle, "minio"), "server", "--address", "127.0.0.1:9000", "--console-address", "127.0.0.1:9001", "--quiet", owner.Minio}, []string{"MINIO_ROOT_USER=" + credentials.AccessKey, "MINIO_ROOT_PASSWORD=" + credentials.SecretKey, "MINIO_PROMETHEUS_AUTH_TYPE=public", "GOMEMLIMIT=8GiB"}, filepath.Join(paths.Results, "minio.log"))
 	if err != nil {

@@ -25,6 +25,7 @@ type sessionState struct {
 	SourceDir      string
 	Plan           *runPlan
 	Phase          string
+	Progress       *runProgress `json:"progress,omitempty"`
 	Error          string
 	UpdatedAt      time.Time
 	ExpiresAt      time.Time

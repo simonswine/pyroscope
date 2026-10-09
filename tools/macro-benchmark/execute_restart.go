@@ -26,11 +26,13 @@ func runBenchmarkGroup(ctx context.Context, paths RunPaths, inputs inputsConfig,
 		return err
 	}
 	cpu, heap := filepath.Join(root, "metastore-cpu.pprof"), filepath.Join(root, "metastore-heap.pprof")
+	reportBenchmarkProgress(ctx, "starting write cluster")
 	p, err := startProcess("taskset", []string{"-c", "4-6", filepath.Join(paths.Bundle, "cluster-ingest"), "-mode=ingest", "-data-dir=" + paths.Ingest, "-endpoints=" + manifest, "-cpu-profile=" + cpu, "-mem-profile=" + heap}, append(append([]string{}, clusterEnv...), "GOMEMLIMIT=12GiB"), filepath.Join(root, "ingest.log"))
 	if err != nil {
 		return err
 	}
 	defer func() {
+		reportBenchmarkProgress(ctx, "stopping write cluster")
 		runErr = errors.Join(runErr, publishEndpoints(paths, idle))
 		stopCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
@@ -53,6 +55,7 @@ func runBenchmarkGroup(ctx context.Context, paths RunPaths, inputs inputsConfig,
 	}
 	// Recover persisted Raft state and let any outstanding compaction finish
 	// before starting the measured query process.
+	reportBenchmarkProgress(ctx, "waiting for compaction settlement")
 	if err := observePaths(ctx, []string{"-settle", "-output", filepath.Join(paths.Results, "metrics")}, paths); err != nil {
 		return err
 	}

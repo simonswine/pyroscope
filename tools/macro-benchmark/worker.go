@@ -16,6 +16,7 @@ type workerState struct {
 	Phase      string
 	Error      string
 	FinishedAt time.Time
+	Progress   *runProgress `json:"progress,omitempty"`
 }
 
 func loadWorkerState(root string) (workerState, error) {
@@ -48,11 +49,14 @@ func runWorker(ctx context.Context, root string, work func(context.Context) erro
 	if err := errors.Join(marker.Sync(), marker.Close()); err != nil {
 		return err
 	}
-	if err := atomicJSON(filepath.Join(root, "status.json"), workerState{Phase: "running"}); err != nil {
+	now := time.Now().UTC()
+	state := workerState{Phase: "running", Progress: &runProgress{Stage: "validating run", StartedAt: now, UpdatedAt: now}}
+	if err := atomicJSON(filepath.Join(root, "status.json"), state); err != nil {
 		return err
 	}
+	ctx = context.WithValue(ctx, progressContextKey{}, &progressReporter{root: root, state: &state})
 	err = work(ctx)
-	state := workerState{Phase: "completed", FinishedAt: time.Now().UTC()}
+	state.Phase, state.FinishedAt = "completed", time.Now().UTC()
 	if err != nil {
 		state.Phase, state.Error = "failed", err.Error()
 		if errors.Is(err, context.Canceled) {
