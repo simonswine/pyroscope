@@ -71,7 +71,9 @@ replay windows. If the original benchmark names no longer exist, choose
 replacements explicitly. The child has its own results and archive. Use `r` to
 reattach to a child. Child destruction is not supported: `d` refuses rather
 than risking the owner's storage or AWS resources. Stop a running child with
-`s`. Destroying an owner invalidates its children. Compaction may change stored
+`s`. Destroying an owner marks its children destroyed too, retaining their local results.
+The session list groups children beneath their parents with tree connectors.
+Already-destroyed owners are reconciled when the session list is loaded. Compaction may change stored
 data between measurements, limiting comparability.
 
 The TUI remains session-oriented: owner and child each have a separate snapshot. Existing sessions started using the former `/tmp/benchmark`

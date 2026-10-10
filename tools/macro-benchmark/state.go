@@ -175,7 +175,55 @@ func (s *stateStore) list() ([]sessionState, error) {
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].Config.RunID < states[j].Config.RunID })
-	return states, nil
+	owners := make(map[string]string, len(states))
+	for _, state := range states {
+		owners[state.Config.RunID] = state.Phase
+	}
+	for i := range states {
+		state := &states[i]
+		if state.Kind == "rerun" && owners[state.StorageRunID] == "destroyed" && state.Phase != "destroyed" {
+			state.Phase, state.Error, state.Progress = "destroyed", "", nil
+			if err := s.save(state); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return sessionTreeOrder(states), nil
+}
+
+// sessionTreeOrder keeps parents ahead of their children, retaining sibling order.
+// Missing parents and malformed cycles remain visible as independent roots.
+func sessionTreeOrder(states []sessionState) []sessionState {
+	byID := make(map[string]bool, len(states))
+	children := make(map[string][]sessionState)
+	for _, state := range states {
+		byID[state.Config.RunID] = true
+		if state.Kind == "rerun" {
+			children[state.ParentRunID] = append(children[state.ParentRunID], state)
+		}
+	}
+	ordered := make([]sessionState, 0, len(states))
+	seen := make(map[string]bool, len(states))
+	var appendTree func(sessionState)
+	appendTree = func(state sessionState) {
+		if seen[state.Config.RunID] {
+			return
+		}
+		seen[state.Config.RunID] = true
+		ordered = append(ordered, state)
+		for _, child := range children[state.Config.RunID] {
+			appendTree(child)
+		}
+	}
+	for _, state := range states {
+		if state.Kind != "rerun" || !byID[state.ParentRunID] {
+			appendTree(state)
+		}
+	}
+	for _, state := range states {
+		appendTree(state)
+	}
+	return ordered
 }
 
 // archive hides a terminal resource-free session from the active list while

@@ -276,7 +276,11 @@ func destroySession(ctx context.Context, store *stateStore, state *sessionState)
 	// Drafts have no AWS side effects, and may not even have a region yet.
 	if state.KeyName == "" {
 		state.Phase = "destroyed"
-		return store.save(state)
+		if err := store.save(state); err != nil {
+			return err
+		}
+		_, err := store.list()
+		return err
 	}
 	client, err := awsClient(ctx, state.Config.Region)
 	if err != nil {
@@ -314,7 +318,12 @@ func destroySession(ctx context.Context, store *stateStore, state *sessionState)
 		}
 	}
 	state.Phase = "destroyed"
-	return store.save(state)
+	if err := store.save(state); err != nil {
+		return err
+	}
+	// Persist child invalidation too; list also repairs interrupted cleanup.
+	_, err = store.list()
+	return err
 }
 
 func resumeSession(ctx context.Context, store *stateStore, state *sessionState) error {

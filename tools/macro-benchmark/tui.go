@@ -465,6 +465,36 @@ func tuiDisplayWithConfirmation(width, height int, root string, states []session
 	return tuiDisplayWithConfirmationAndSpinner(width, height, root, states, selected, message, busy, confirm, spinner.MiniDot.Frames[0])
 }
 
+func sessionTreeLabel(states []sessionState, index int) string {
+	byID := make(map[string]int, len(states))
+	for i, state := range states {
+		byID[state.Config.RunID] = i
+	}
+	var prefix func(int, map[int]bool) string
+	prefix = func(i int, seen map[int]bool) string {
+		state := states[i]
+		parent, exists := byID[state.ParentRunID]
+		if state.Kind != "rerun" || !exists || seen[i] {
+			return ""
+		}
+		seen[i] = true
+		last := true
+		for j := i + 1; j < len(states); j++ {
+			if states[j].Kind == "rerun" && states[j].ParentRunID == state.ParentRunID {
+				last = false
+				break
+			}
+		}
+		ancestor := prefix(parent, seen)
+		ancestor = strings.ReplaceAll(strings.ReplaceAll(ancestor, "├─ ", "│  "), "└─ ", "   ")
+		if last {
+			return ancestor + "└─ "
+		}
+		return ancestor + "├─ "
+	}
+	return prefix(index, make(map[int]bool)) + states[index].Config.RunID
+}
+
 func activePhase(phase string) bool {
 	switch phase {
 	case "preparing", "provisioning", "uploading", "starting", "running", "stopping", "destroying":
@@ -561,7 +591,7 @@ func tuiDashboard(width, height int, root string, states []sessionState, selecte
 			}
 			// Reserve one cell for selection so the spinner and text never move.
 			phase = marker + phase
-			rows = append(rows, table.Row{terminalText(phase, 0), terminalText(state.Config.RunID, 0), fmt.Sprintf("%d", len(benchmarks)), terminalText(timeAgo(state.UpdatedAt), 0)})
+			rows = append(rows, table.Row{terminalText(phase, 0), terminalText(sessionTreeLabel(states, i), 0), fmt.Sprintf("%d", len(benchmarks)), terminalText(timeAgo(state.UpdatedAt), 0)})
 		}
 		visibleRows := max(1, sessionHeight-1)
 		firstRow := max(0, selected-visibleRows+1)
