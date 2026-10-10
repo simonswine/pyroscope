@@ -49,8 +49,17 @@ func reconcileResources(ctx context.Context, client resourceDiscovery, state *se
 			if state.Phase != "destroying" || !awsErrorCode(err, "InvalidInstanceID.NotFound") {
 				return err
 			}
-		} else if len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 || !ownedResource(out.Reservations[0].Instances[0].Tags, state.Config.RunID) {
-			return errors.New("persisted instance ownership mismatch")
+		} else {
+			instanceCount := 0
+			for _, reservation := range out.Reservations {
+				instanceCount += len(reservation.Instances)
+			}
+			// EC2 can return an empty successful response after a terminated
+			// instance disappears, rather than InvalidInstanceID.NotFound.
+			missingDuringCleanup := state.Phase == "destroying" && instanceCount == 0
+			if !missingDuringCleanup && (len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 || !ownedResource(out.Reservations[0].Instances[0].Tags, state.Config.RunID)) {
+				return errors.New("persisted instance ownership mismatch")
+			}
 		}
 	}
 	if state.GroupID != "" {

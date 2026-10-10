@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -10,11 +11,15 @@ import (
 )
 
 type fakeResourceDiscovery struct {
-	instances []types.Instance
-	groups    []types.SecurityGroup
+	instances         []types.Instance
+	groups            []types.SecurityGroup
+	emptyReservations bool
 }
 
 func (f fakeResourceDiscovery) DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	if f.emptyReservations {
+		return &ec2.DescribeInstancesOutput{}, nil
+	}
 	return &ec2.DescribeInstancesOutput{Reservations: []types.Reservation{{Instances: f.instances}}}, nil
 }
 func (f fakeResourceDiscovery) DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
@@ -62,6 +67,24 @@ func TestReconcileRejectsAmbiguousOrUnownedResources(t *testing.T) {
 				t.Fatal("accepted unsafe recovery")
 			}
 		})
+	}
+}
+
+func TestReconcileMissingPersistedInstance(t *testing.T) {
+	for _, emptyReservations := range []bool{false, true} {
+		for _, phase := range []string{"destroying", "running"} {
+			t.Run(fmt.Sprintf("empty-reservations=%t/phase=%s", emptyReservations, phase), func(t *testing.T) {
+				state := &sessionState{Config: runConfig{RunID: "test"}, InstanceID: "i-gone", Phase: phase}
+				err := reconcileResources(context.Background(), fakeResourceDiscovery{emptyReservations: emptyReservations}, state)
+				if phase == "destroying" {
+					if err != nil {
+						t.Fatalf("missing instance should permit cleanup: %v", err)
+					}
+				} else if err == nil {
+					t.Fatal("accepted missing instance outside cleanup")
+				}
+			})
+		}
 	}
 }
 
