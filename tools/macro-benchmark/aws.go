@@ -161,7 +161,7 @@ func resumeAWS(ctx context.Context, store *stateStore, state *sessionState) erro
 		{Key: aws.String("Name"), Value: aws.String("pyroscope-macro-" + cfg.RunID)},
 		{Key: aws.String("Purpose"), Value: aws.String(purpose)},
 		{Key: aws.String("RunID"), Value: aws.String(cfg.RunID)},
-		{Key: aws.String("ExpiresAt"), Value: aws.String(expiry.Format(time.RFC3339))},
+		{Key: aws.String("ExpiresAt"), Value: aws.String(time.Now().UTC().Add(instanceLifetime).Format(time.RFC3339))},
 	}
 	keyName := state.KeyName
 	groupID, instanceID := state.GroupID, state.InstanceID
@@ -171,6 +171,9 @@ func resumeAWS(ctx context.Context, store *stateStore, state *sessionState) erro
 	groupID, instanceID = state.GroupID, state.InstanceID
 	if err := store.save(state); err != nil {
 		return err
+	}
+	if err := ensureCleanup(ctx, state); err != nil {
+		return fmt.Errorf("install automatic 32-hour cleanup: %w", err)
 	}
 	if instanceID == "" {
 		if time.Now().After(state.ExpiresAt) {

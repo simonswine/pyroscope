@@ -134,8 +134,19 @@ starts (an interrupted upload restarts from byte zero). Failed/stopped benchmark
 **Billing warning:** quitting, detaching, stopping, and completing a benchmark
 all leave the EC2 instance and EBS volume allocated. The persisted deadline stops
 the worker; it does **not** terminate EC2 or delete resources. Collect results
-with `g`, then use `d` and verify cleanup. The `ExpiresAt` tag is metadata, not an
-AWS TTL. Use an independent account-level cleanup policy for unattended safety.
+with `g`, then use `d` and verify cleanup.
+
+Newly provisioned hosts have an independent, per-session Lambda reaper. Every
+minute it checks EC2's launch timestamp and terminates the host after **32 hours**,
+regardless of benchmark activity, reruns, or controller connectivity. It then
+removes the security group and imported AWS SSH key pair (not your local private
+key), deletes its EventBridge rule and itself, and cleans up its execution role.
+Termination and security-group release may take additional minutes; failures are
+retried while the rule remains installed. Manual destruction also lets the reaper
+clean itself up on its next invocation. Collect results before the 32-hour limit:
+uncollected artifacts on the instance are lost. The `ExpiresAt` tag is still only
+metadata, not an AWS TTL. Older hosts need to be resumed with this version to
+install the reaper. An account-level cleanup policy remains useful as a backstop.
 Deleting the local state directory is not AWS cleanup and loses access/recovery
 information. Existing checkout-local YAML runs are not automatically imported.
 
@@ -172,7 +183,13 @@ custom deployments require code defaults. Preparation needs EC2 DescribeImages,
 DescribeVpcs, DescribeSubnets, DescribeRouteTables and
 DescribeInstanceTypeOfferings. Provisioning/recovery also needs instance, key-pair
 and security-group describe/create/delete permissions, ingress authorization,
-termination and tagging. Account encryption policies may require KMS permissions.
+termination and tagging. Automatic cleanup additionally requires IAM GetRole,
+CreateRole, PutRolePolicy, and PassRole (restricted to Lambda), Lambda GetFunction,
+CreateFunction, ListTags and AddPermission, and EventBridge PutRule and PutTargets. Cleanup
+resources use the deterministic `pyroscope-macro-cleanup-*` name prefix. The
+execution role permits EC2 deletion only for resources tagged with this session's
+Purpose and RunID; self-cleanup permissions are restricted to its own resources.
+Account encryption policies may require KMS permissions.
 Use a dedicated principal and the provided `deny-snapshots.json` policy. No new
 snapshot, AMI, VPC, subnet, or AWS S3 bucket is created.
 
