@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -29,7 +30,7 @@ func (f fakeResourceDiscovery) DescribeSecurityGroups(context.Context, *ec2.Desc
 func TestReconcileRecoversLostAWSResponses(t *testing.T) {
 	tags := []types.Tag{{Key: aws.String("Purpose"), Value: aws.String(purpose)}, {Key: aws.String("RunID"), Value: aws.String("test")}}
 	for _, phase := range []types.InstanceStateName{types.InstanceStateNameRunning, types.InstanceStateNameTerminated} {
-		state := &sessionState{Config: runConfig{RunID: "test"}}
+		state := &sessionState{Config: runConfig{RunID: "test"}, Phase: "destroying"}
 		client := fakeResourceDiscovery{
 			instances: []types.Instance{{InstanceId: aws.String("i-existing"), Tags: tags, State: &types.InstanceState{Name: phase}}},
 			groups:    []types.SecurityGroup{{GroupId: aws.String("sg-existing"), Tags: tags}},
@@ -80,8 +81,8 @@ func TestReconcileMissingPersistedInstance(t *testing.T) {
 					if err != nil {
 						t.Fatalf("missing instance should permit cleanup: %v", err)
 					}
-				} else if err == nil {
-					t.Fatal("accepted missing instance outside cleanup")
+				} else if !errors.Is(err, errInstanceUnavailable) {
+					t.Fatalf("expected unavailable instance error, got %v", err)
 				}
 			})
 		}

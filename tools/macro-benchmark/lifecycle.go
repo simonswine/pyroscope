@@ -15,6 +15,8 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+var errInstanceUnavailable = errors.New("instance no longer exists or has terminated (possibly expired and cleaned up)")
+
 func awsErrorCode(err error, code string) bool {
 	var api smithy.APIError
 	return errors.As(err, &api) && api.ErrorCode() == code
@@ -46,7 +48,11 @@ func reconcileResources(ctx context.Context, client resourceDiscovery, state *se
 	if state.InstanceID != "" {
 		out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{state.InstanceID}})
 		if err != nil {
-			if state.Phase != "destroying" || !awsErrorCode(err, "InvalidInstanceID.NotFound") {
+			if awsErrorCode(err, "InvalidInstanceID.NotFound") {
+				if state.Phase != "destroying" {
+					return errInstanceUnavailable
+				}
+			} else {
 				return err
 			}
 		} else {
@@ -56,9 +62,18 @@ func reconcileResources(ctx context.Context, client resourceDiscovery, state *se
 			}
 			// EC2 can return an empty successful response after a terminated
 			// instance disappears, rather than InvalidInstanceID.NotFound.
+			if instanceCount == 0 && state.Phase != "destroying" {
+				return errInstanceUnavailable
+			}
 			missingDuringCleanup := state.Phase == "destroying" && instanceCount == 0
 			if !missingDuringCleanup && (len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 || !ownedResource(out.Reservations[0].Instances[0].Tags, state.Config.RunID)) {
 				return errors.New("persisted instance ownership mismatch")
+			}
+			if instanceCount == 1 && state.Phase != "destroying" {
+				instance := out.Reservations[0].Instances[0]
+				if instance.State != nil && (instance.State.Name == types.InstanceStateNameTerminated || instance.State.Name == types.InstanceStateNameShuttingDown) {
+					return errInstanceUnavailable
+				}
 			}
 		}
 	}
@@ -368,6 +383,12 @@ func sessionAction(ctx context.Context, store *stateStore, state *sessionState, 
 	err := action(ctx, store, state)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		state.Error = err.Error()
+		if errors.Is(err, errInstanceUnavailable) {
+			switch state.Phase {
+			case "provisioning", "uploading", "ready", "starting", "running", "stopping":
+				state.Phase = "interrupted"
+			}
+		}
 		log.Printf("session=%s phase=%s error=%v", state.Config.RunID, state.Phase, err)
 	}
 	return errors.Join(err, store.save(state))
