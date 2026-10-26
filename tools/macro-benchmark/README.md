@@ -1,0 +1,414 @@
+# AWS macro benchmark (experimental)
+
+A single terminal UI owns preparation, temporary AWS resources, remote execution,
+artifact collection, and explicit cleanup. Run from `tools/macro-benchmark` with
+Go 1.25, OpenSSH, and your AWS profile/SSO session configured. The remote
+Ubuntu image must provide Python 3 for same-connection agent bootstrap:
+
+```sh
+go build -o macro-benchmark .
+./macro-benchmark
+```
+
+The controller supports macOS and Linux. The disposable worker targets Linux
+amd64 and uses systemd, not Docker or Kubernetes.
+
+## TUI controls
+
+A **machine** (`▣`) owns EC2 infrastructure independently of benchmark
+**sessions** (`●`). Sessions hold configuration, execution checkpoints and results;
+**rerun** creates a session reusing the source session's storage. Machines and
+sessions appear in one tree with selection-specific details and controls.
+
+Press `m` to configure a machine, then select it and press `r` to provision it.
+Press `n` on a machine to create a benchmark session there. On session rows,
+`p` prepares, `r` runs/follows, `s` stops, and `g` collects results. Only machine
+rows expose `d` (destroy infrastructure) and `i` (update SSH access IP).
+Machine destruction requires stopping active sessions first. `a` archives locally;
+archive dependent sessions before their storage source. Archiving a machine also
+archives its sessions (dependent sessions first); active sessions must be stopped first.
+Existing AWS-backed sessions migrate automatically, preserving ownership tags;
+unassigned drafts remain visible. Machine snapshots live under `machines/` alongside
+`sessions/`. Quit and stop do not terminate EC2 or stop billing.
+
+The dashboard reserves fixed header and footer regions and fills the remaining
+terminal space. At 120 columns or wider, sessions and details appear side by side;
+narrower terminals stack them. Use `[` / `]` to scroll details that do not fit.
+
+The configuration form keeps its header and Save/Cancel footer fixed, scrolling
+the fields and benchmark list to follow keyboard focus. Resize the terminal at
+any time. Invalid input is shown inline without discarding your edits; correct
+it and select Save again, or press Esc to cancel.
+
+| Key | Action |
+| --- | --- |
+| `n` | New session: select benchmarks, Git refs, repetitions and benchtime |
+| `e` | Edit the selected draft |
+| `j` / `k`, ↓ / ↑ | Select a session |
+| `[` / `]` | Scroll selected-session details up / down |
+| `p` | Discover settings and prepare the selected draft (no AWS resource creation) |
+| `r` | Resume/reconcile the selected session, or attach to its remote worker |
+| `R` | Configure new benchmarks and baseline/comparison refs on a completed or benchmark-failed owner's existing instance (no replay) |
+| `c` | Cancel/detach the current **local** operation |
+| `g` | Collect the results archive and build both reports |
+| `o` | Open the self-contained local report in your browser (builds it from collected results if missing) |
+| `h` | Open an interactive SSH shell on the selected instance; `exit` returns to the TUI |
+| `i` | Detect your current public IPv4 and update the owner's SSH `/32` access rule |
+| `s` | Stop the remote worker, after confirmation; keep the instance |
+| `d` | Destroy the instance, security group, and imported key pair, after confirmation |
+| `a` | Archive a draft or destroyed session locally so it no longer appears in the list (after confirmation) |
+| `q`, Ctrl-C | Quit, leaving remote work and AWS resources alone |
+
+Launch, stop, and destroy actions display a confirmation popup; press uppercase `Y` to proceed or another key to cancel. Preparation
+resolves the selected Git refs to immutable commits and builds in temporary detached
+worktrees. The controller, benchmark clients and integration harness come from the
+source checkout recorded when the session was created. Preparation does not launch
+instances or create AWS resources. Use `r` again to launch a prepared
+session. During attachment, `c` lets you select and work with another session.
+
+The controller verifies AWS ownership and uses a single persistent, non-PTY SSH
+connection per attached session. Initial SSH connection failures are retried
+for up to ten minutes while the instance boots; host-key and bootstrap errors
+fail immediately. A small Python helper installs the checksummed agent on that
+connection; bundle upload, worker control, status and
+artifact download then use its framed protocol. The interactive `h` shell opens
+an independent SSH connection and does not stop the worker. Exiting the shell
+(or using OpenSSH's `~.` escape) returns to the dashboard.
+
+`R` creates a new child session on the owner's instance. It requires a remote
+`ingest-ready.yaml`, owner-scoped MinIO credentials, and the original local bundle;
+older runs without these records are rejected. The child builds new benchmark
+clients from the current checkout and reuses the original product commits and
+replay windows. If the original benchmark names no longer exist, choose
+replacements explicitly. The child has its own results and archive. Use `r` to
+reattach to a child. Child destruction is not supported: `d` refuses rather
+than risking the owner's storage or AWS resources. Stop a running child with
+`s`. Destroying an owner marks its children destroyed too, retaining their local results.
+The session list groups children beneath their parents with tree connectors.
+Already-destroyed owners are reconciled when the session list is loaded. Compaction may change stored
+data between measurements, limiting comparability.
+
+The TUI remains session-oriented: owner and child each have a separate snapshot. Existing sessions started using the former `/tmp/benchmark`
+worker are **not migrated** by this version; do not use `r`, `s`, or `g` on those
+sessions until a compatibility adapter is available. The removed public
+`prepare`, `run`, and `keygen` commands are replaced by the TUI. The private
+`agent --stdio` and `worker` commands are not user entry points.
+
+## Persistent state and resumption
+
+All generated **local** state lives in:
+
+```text
+$XDG_STATE_HOME/pyroscope-macro-benchmark/
+# default: ~/.local/state/pyroscope-macro-benchmark/
+  controller.lock
+  controller.log
+  sessions/<session-id>/state.json
+  archived-sessions/<session-id>/state.json  # after explicit archive
+  ssh/id_ed25519[.pub]
+  bundles/<session-id>/...
+  results/<session-id>/...
+```
+
+Relative `XDG_STATE_HOME` values are ignored per the XDG specification. The root
+is private (0700); snapshots, logs, and private keys are owner-only. One controller
+holds an OS lock, released automatically even if the controller is killed.
+JSON snapshots are versioned, fsynced, and atomically renamed. Corrupt or unknown
+versions fail closed rather than creating replacement state. Archiving moves only
+the local session snapshot to `archived-sessions/`; it keeps bundles and results
+and never stops or destroys AWS resources.
+
+Reopen the TUI and select `r` to reconcile a saved checkpoint with AWS and the
+worker. The list initially shows **saved**, not necessarily current, remote
+status. AWS resource tags recover responses lost before their IDs were saved;
+EC2's client token prevents duplicate instance launches. Ambiguous or unowned
+resources are rejected. Destroy is also checkpointed and retryable.
+
+On EC2, systemd owns the worker and all its subprocesses, independently of SSH.
+Closing the TUI, losing connectivity, or killing the local controller does **not**
+stop replay or measurement. Reattaching reads the existing per-run worker status over the persistent agent
+connection rather than starting another replay. Completed results download to
+a temporary name, are SHA256-verified and fsynced before being published locally.
+
+While following a running session, the selected-session panel shows the current
+stage, dataset or benchmark/version count, elapsed time, and stage-update age.
+Progress is checkpointed remotely and refreshed through the existing three-second
+poll. The post-replay settling delay shows a countdown; subsequent compaction
+settlement has no estimated duration. Stage-update age is not a worker heartbeat:
+a long replay or measurement can legitimately remain on the same stage. Workers
+started with older binaries report only their phase.
+
+A durable remote start marker prevents double ingestion. If the **remote worker
+itself** crashes or the host reboots, it is not automatically replayed into a
+partially populated tenant. Collect any available diagnostics and create a new
+session. This is controller resumption, not mid-replay process checkpointing.
+Preparation and interrupted bundle uploads can be retried before remote work
+starts (an interrupted upload restarts from byte zero). Failed/stopped benchmark sessions are not reused for ingestion.
+
+**Billing warning:** quitting, detaching, stopping, and completing a benchmark
+all leave the EC2 instance and EBS volume allocated. The persisted deadline stops
+the worker; it does **not** terminate EC2 or delete resources. Collect results
+with `g`, then use `d` and verify cleanup.
+
+Newly provisioned hosts have an independent, per-session Lambda reaper. Every
+minute it checks EC2's launch timestamp and terminates the host after **32 hours**,
+regardless of benchmark activity, reruns, or controller connectivity. It then
+removes the security group and imported AWS SSH key pair (not your local private
+key), deletes its EventBridge rule and itself, and cleans up its execution role.
+Termination and security-group release may take additional minutes; failures are
+retried while the rule remains installed. Manual destruction also lets the reaper
+clean itself up on its next invocation. Collect results before the 32-hour limit:
+uncollected artifacts on the instance are lost. The `ExpiresAt` tag is still only
+metadata, not an AWS TTL. Older hosts need to be resumed with this version to
+install the reaper. An account-level cleanup policy remains useful as a backstop.
+Deleting the local state directory is not AWS cleanup and loses access/recovery
+information. Existing checkout-local YAML runs are not automatically imported.
+
+## Configuration and discovery
+
+Controller defaults and dataset metadata are defined in `defaults.go`; no run
+YAML is required by the TUI. Benchmarks self-register in Go. YAML is used only
+for generated bundle/artifact manifests.
+
+New sessions select **all benchmarks** by default. Enter comma-separated benchmark
+names to select a subset. Defaults are baseline `HEAD^`, comparison `HEAD`,
+**5 repetitions per benchmark per version**, and **benchtime `5x`** (25 timed queries per benchmark per version, plus warmups). The ingest
+ref follows the comparison ref unless overridden. Git refs must exist locally;
+commit changes before selecting them (working-tree changes are not product refs).
+
+Preparation derives the required datasets from the selection, assigns each a
+unique tenant, and persists the resolved commits and tenant mapping in `plan.yaml`.
+Each dataset is replayed once using the ingest revision. Baseline and comparison
+query the same tenant and measured replay window. Repeated preparation uses the
+persisted commits rather than resolving moving branches again.
+
+Discovery is read-only:
+
+- Region: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then `aws configure get region`.
+- SSH source: public IPv4 `/32` from `https://checkip.amazonaws.com`.
+- AMI: newest public Canonical Ubuntu Server 26.04 amd64 HVM/EBS image, constrained
+  to Canonical account `099720109477` (no fallback publisher or OS release).
+- Network: available IPv4 subnet with an active internet-gateway route and an AZ
+  offering `c6i.8xlarge`. Prefer an eligible default VPC; ambiguous VPCs fail.
+
+Use standard AWS SDK credentials (`AWS_PROFILE`, SSO, environment, or role).
+The TUI edits benchmark/ref selections, not network settings;
+custom deployments require code defaults. Preparation needs EC2 DescribeImages,
+DescribeVpcs, DescribeSubnets, DescribeRouteTables and
+DescribeInstanceTypeOfferings. Provisioning/recovery also needs instance, key-pair
+and security-group describe/create/delete permissions, ingress authorization,
+termination and tagging. Automatic cleanup additionally requires IAM GetRole,
+CreateRole, PutRolePolicy, and PassRole (restricted to Lambda), Lambda GetFunction,
+CreateFunction, ListTags and AddPermission, and EventBridge PutRule and PutTargets. Cleanup
+resources use the deterministic `pyroscope-macro-cleanup-*` name prefix. The
+execution role permits EC2 deletion only for resources tagged with this session's
+Purpose and RunID; self-cleanup permissions are restricted to its own resources.
+Account encryption policies may require KMS permissions.
+Use a dedicated principal and the provided `deny-snapshots.json` policy. No new
+snapshot, AMI, VPC, subnet, or AWS S3 bucket is created.
+
+If your public IP changes, select the owner or a rerun child and press `i`,
+then confirm. This uses the AWS API (no working SSH connection needed) to replace
+only the previous TCP/22 IPv4 `/32` rule and update related local snapshots.
+Other rules are preserved. Private-IP sessions and custom wider source CIDRs
+require manual configuration. IAM needs `ec2:DescribeSecurityGroups`,
+`ec2:DescribeSecurityGroupRules`, and `ec2:ModifySecurityGroupRules`.
+
+### Rerunning against existing replay state
+
+Select a completed or benchmark-failed storage owner and press `R`. The form
+lets you select newly added benchmarks, baseline/comparison Git refs, repetition
+count, and benchtime. Only benchmarks backed by already replayed datasets are
+available. Refs default to the owner's pinned commits; new refs are resolved
+and pinned when the child session is created.
+
+The child reuses the same EC2 instance, tenants, replay windows, object storage,
+and metastore state. The ingest revision stays fixed and read-only. Benchmark
+clients are rebuilt from the current checkout, and query binaries are built at
+the selected baseline/comparison revisions using the owner's integration harness.
+No replay is performed; results are stored separately from the owner. The
+instance must still exist and have a verified ingestion-ready record. Older
+query revisions must be compatible with the preserved ingest/storage format.
+
+## Workloads and hardware
+
+| Preset | Recording | Download size | Queries |
+| --- | --- | --- | --- |
+| checkoutservice | 1 hour | 29.88 MB | SelectSeries and merged flamegraph |
+| full-tenant | 3,500 services, 5 minutes | 7.17 GB | LabelNames, LabelValues, Series |
+| high-volume-service | 2 hours | 19.32 GB | Stacktraces: flamegraph, tree, DOT, pprof |
+
+Public GCS URLs are pinned by generation and passed directly to profilecli on
+EC2; no separate fixture download is performed. Catalog size and CRC32C are
+informational, not validated by the replay. When supplied, SHA256 is verified
+by profilecli. Local fixtures require a trusted SHA256. The original recording speed is preserved, so replay
+may take hours. Replay checks require nonzero pushes and zero failures, followed
+by flushing, settling and an observed quiet compaction window.
+
+`query-wide` (full tenant) selects `namespace="fire-dev-001"`, grouped by
+`job`. `query-pod` (2h high-volume service) selects the lexicographically first
+pod discovered within the configured selector and replay window, also grouped by
+`job`. Pod discovery runs outside measured requests. Both cases exercise
+SelectSeries with and without individual exemplars, and SelectHeatmap for
+individual profiles without exemplars, using a 15-second step. Fixture label
+names and the namespace value use their anonymized mappings.
+
+Query cases are Go benchmarks in `benchmark/<case-name>/*_bench_test.go`.
+Each package registers its name and dataset in `register.go` using `init()`.
+Add a blank import to `benchmark/benchmark.go` when adding a package so its
+registration runs in the controller (Go does not auto-discover packages).
+Preparation compiles selected benchmarks into standalone test binaries; there
+is no YAML case loader. Required datasets are deduplicated automatically.
+
+To run a case against an existing cluster, set `PYROSCOPE_URL`, `TENANT_ID`,
+`START_MS`, `END_MS`, `LABEL_SELECTOR`, and (for profile queries) `PROFILE_TYPE`:
+
+```bash
+go test ./benchmark/series-total -run '^$' -bench . -benchtime=5x -count=5
+```
+
+Preparation builds `profilecli`, the controller and benchmark clients from the
+current checkout. It builds three cluster binaries from the resolved ingest,
+baseline and comparison commits (identical commits share a build). The current
+integration harness is copied into each detached worktree so all revisions use
+the same orchestration; its source is preserved in the bundle's `harness/` directory.
+Incompatible revisions fail during compilation or startup rather than falling back.
+A pinned MinIO release is downloaded and SHA256-verified. Bundle checksums are
+checked before remote execution. The resolved plan, source commit/diff and
+measurement inputs are retained with results.
+
+The host is `c6i.8xlarge`: 16 physical cores, one thread per core, 64 GiB RAM.
+An encrypted 500 GiB gp3 root volume uses 6,000 IOPS / 250 MiB/s and is deleted
+on instance termination. The default lifetime budget is eight hours.
+
+| CPU set | Workload | Soft Go memory limit |
+| --- | --- | --- |
+| 0–1 | Controller/observation | default |
+| 2–3 | MinIO | 8 GiB |
+| 4–6 | Ingestion, metastore and compaction cluster | 12 GiB |
+| 7–14 | Query frontend and backends | 33 GiB |
+| 15 | Replay, then query benchmark | 4 GiB |
+
+The write cluster uses 2 segment writers, 3 metastores, one distributor and one
+compaction worker. The query cluster uses one frontend and 9 backends connected
+to that existing metastore. **Components within each cluster share one Go process,
+CPU allocation and GC** and use integration defaults, not a production deployment. Memory limits are soft runtime hints, not cgroups.
+MinIO uses loopback S3 with random per-run credentials, never AWS S3.
+
+Before **each benchmark/version**, the query cluster and write cluster (including
+all three metastores) start fresh. All five repetitions run on those same
+processes using `-test.count=5 -test.benchtime=5x`. Baseline and comparison are
+paired per benchmark, not per repetition. The write cluster uses the ingest ref
+and retains its WAL, snapshots and port assignments across restarts; datasets are
+not replayed. MinIO stays alive. This resets process caches, not OS or object-store
+caches, and allows caches to warm across repetitions. A successful warmup request precedes the timed loop;
+all responses must be nonempty. This does not prove fixture completeness.
+
+Both cluster processes write runtime CPU and heap profiles to disk, covering all
+five repetitions together. CPU
+profiling runs from readiness through the benchmark (including warmup and idle
+time), stopping before teardown. The heap profile is written after GC and before
+components stop; it includes process-lifetime allocation samples. `cpu.pprof` and `heap.pprof` cover the **shared frontend/backend runtime**.
+`metastore-cpu.pprof` and `metastore-heap.pprof` cover the **shared write/metastore runtime**
+(including recovery settling), not just metastore code. Reports also accept the old
+`ingest-cpu.pprof` / `ingest-heap.pprof` names. They do not profile the HTTP benchmark client. Very short queries may still produce few or no CPU samples, even with `5x`.
+
+The initial ingest process also writes `replay-cpu.pprof` and `replay-heap.pprof`
+at the result root. CPU capture starts before readiness is published and covers
+all dataset replays, the settling delay, and the compaction drain, stopping before
+component teardown. Distributor, both segment writers, compaction worker, and
+three metastores share this process and therefore one profile. Heap is captured
+after GC at the end of settling; allocation samples cover the process lifetime.
+These captures use the ingest revision, are not baseline/comparison pairs, and
+are not produced by reruns (which do not replay). Graceful failure/cancellation
+also finalizes partial captures; forced termination may leave invalid profiles.
+
+Replay profiles are not yet displayed in the comparison report. Extract them
+from `results.tar.gz` and open directly, for example:
+
+```bash
+tar -xzf results.tar.gz replay-cpu.pprof replay-heap.pprof
+go tool pprof -http=127.0.0.1:8080 replay-cpu.pprof
+```
+
+Both reports are generated automatically after results collection (including automatic
+collection on completion), under `results/<session-id>/`:
+
+- `report-local.html`: standalone, offline HTML with original native pprof bytes embedded.
+  Press `o` in the TUI to open it directly in your browser.
+- `report.html` and `report.assets/`: smaller web report with native pprof files loaded
+  on demand. Serve these together over HTTP; publication is not automatic.
+
+Both offer baseline/comparison pprof downloads preserving the original evidence.
+Report failures retain the downloaded archive; use `g` to retry.
+
+To generate both reports manually from a collected archive:
+
+```bash
+go run . report ~/.local/state/pyroscope-macro-benchmark/results/<session-id>/results.tar.gz index.html
+python3 -m http.server # open http://localhost:8000/
+```
+
+The header shows the baseline/comparison refs and commits from `plan.yaml`,
+host details from `cpu.txt` (instance type and provisioned memory reflect the
+current `c6i.8xlarge` runner), and the worker's UTC start, finish, and elapsed
+time. New archives record `started_at` in `status.yaml`; older archives infer
+the start from the first UTC `run.log` entry. This measures worker execution,
+including dataset replay and cleanup, not EC2 provisioning.
+
+The overview has one row per reported benchmark or sub-benchmark, initially
+comparing `time/op`. Its metric selector switches the whole table to other
+reported metrics
+(benchstat means and significance) or query/metastore sampled CPU time (SI time
+units) and sampled process-lifetime allocated bytes (binary memory units,
+descriptive changes only). Profile captures are for the whole benchmark and
+are never attributed to individual sub-benchmarks.
+Missing measurements show as unavailable. Overview column headers sort by the
+unscaled values (durations in nanoseconds, allocated bytes in bytes, and
+changes in percentage points), with unavailable values last. Benchmark
+statistics stay visible; only the flamegraph is collapsible, and native pprof
+is decoded in the browser when it is expanded.
+The layout and flamegraph use the available viewport width.
+
+The manual command produces `index.html`, `index.assets/`, and `index-local.html`.
+Keep `index.html` and `index.assets/` together when publishing over HTTP (including
+GitHub Pages). Open `index-local.html` directly from disk for offline use; it needs
+no accompanying files. Native pprof decoding and the download UI are adapted from
+[benchstat-prof](https://github.com/simonswine/benchstat-prof) (Apache-2.0).
+
+The report uses vendored benchstat for query results and the npm package [`@simonswine/grafana-flamegraph`](https://www.npmjs.com/package/@simonswine/grafana-flamegraph) for baseline, comparison, and diff profiles. The package version is pinned in `report-ui/package.json` and `report-ui/yarn.lock`. Each benchmark has a collapsible flamegraph with a profile picker; the viewer itself offers baseline, comparison, and diff controls. CPU profiles include warmup and idle; allocation flamegraphs use `alloc_space` from heap profiles captured after GC and include all allocations since process start. Differences are descriptive, not statistical tests of profile samples. To rebuild the embedded assets from `tools/macro-benchmark`, run `cd report-ui && corepack yarn install --immutable && corepack yarn build` (requires Vite installed in `../../../ui`). Commit the updated `report_assets/` alongside the source.
+
+Results are isolated by version and benchmark (`bench.txt` contains all repetitions):
+
+```text
+baseline/<benchmark>/{bench.txt,cluster.log,cpu.pprof,heap.pprof,endpoints.yaml,metrics/}
+baseline/<benchmark>/{ingest.log,metastore-cpu.pprof,metastore-heap.pprof,ingest-endpoints.yaml}
+comparison/<benchmark>/...
+plan.yaml
+windows.yaml
+replay-<dataset>.log
+replay-cpu.pprof
+replay-heap.pprof
+```
+
+Query shutdown is awaited, then the write cluster is stopped, so all profiles
+finish writing before the next benchmark/version starts. Results also include replay logs, metrics, host statistics, status and
+provenance.
+Use sanitized fixtures: application logs and source diffs can contain sensitive
+data. Private keys, generated S3 credentials and raw fixtures are not included
+in the results archive. SSH uses per-session known_hosts and trust on first use.
+
+## Validation
+
+```sh
+go test -race ./...
+go vet ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build .
+```
+
+Tests cover atomic state, exclusive controller locking, checkpoint recovery,
+resource ownership/ambiguity, cancellation, lost worker-submission responses,
+and at-most-once replay. A pseudo-terminal smoke test verified creating a draft,
+quitting, and reopening it. The detached AWS lifecycle and new multi-revision
+workflow have not yet been validated end to end on a live instance. Controlled
+cold-cache tests, concurrent workloads and latency percentiles remain follow-up work.

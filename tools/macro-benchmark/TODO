@@ -1,0 +1,2 @@
+- Allow ingest/replay at different versions
+- Reuse any ingest in existence on the storage owner

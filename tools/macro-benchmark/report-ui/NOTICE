@@ -1,0 +1,14 @@
+The native pprof decoder (pprof.ts), decoder tests (pprof.test.mjs), and
+native-profile report UI adaptations in main.tsx are from benchstat-prof:
+https://github.com/simonswine/benchstat-prof
+Licensed under Apache-2.0; see LICENSE.benchstat-prof.
+
+Upstream notice:
+benchstat-prof
+
+Project code and the report implementation are licensed under the Apache
+License, Version 2.0. The report implementation is included under Apache-2.0
+with authorization from its copyright holder.
+
+The bundled fflate dependency is copyright Arjun Barrett, MIT licensed;
+see ../report_assets/LICENSE.fflate.

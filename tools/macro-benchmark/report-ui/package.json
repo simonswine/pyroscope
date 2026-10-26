@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "packageManager": "yarn@4.13.0",
+  "scripts": {
+    "build": "node ../../../ui/node_modules/vite/bin/vite.js build --config vite.config.mjs",
+ "test": "node test.mjs"
+  },
+  "dependencies": {
+    "@simonswine/grafana-flamegraph": "0.1.1",
+    "fflate": "0.8.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

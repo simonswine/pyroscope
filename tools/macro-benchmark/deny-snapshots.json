@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "NeverCreateBenchmarkSnapshotsOrImages",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateSnapshot",
+        "ec2:CreateSnapshots",
+        "ec2:CopySnapshot",
+        "ec2:CreateImage",
+        "ec2:CopyImage",
+        "ec2:RegisterImage",
+        "ec2:CreateReplaceRootVolumeTask"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
