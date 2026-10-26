@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -144,10 +145,8 @@ func (c *Cluster) CompactionJobsFinished(ctx context.Context) (float64, error) {
 }
 
 func (c *Cluster) v2Prepare(_ context.Context, memberlistJoin []string) error {
-	metastoreLeader := c.metastoreExpectedLeader()
-
 	for _, comp := range c.Components {
-		if err := c.v2PrepareComponent(comp, metastoreLeader); err != nil {
+		if err := c.v2PrepareComponent(comp, c.MetastoreAddress()); err != nil {
 			return err
 		}
 
@@ -160,7 +159,7 @@ func (c *Cluster) v2Prepare(_ context.Context, memberlistJoin []string) error {
 	return nil
 }
 
-func (c *Cluster) v2PrepareComponent(comp *Component, metastoreLeader *Component) error {
+func (c *Cluster) v2PrepareComponent(comp *Component, metastoreAddress string) error {
 	dataDir := c.dataDir(comp)
 
 	comp.flags = c.commonFlags(comp)
@@ -169,7 +168,7 @@ func (c *Cluster) v2PrepareComponent(comp *Component, metastoreLeader *Component
 		"-architecture.storage=v2",
 		"-querier.query-tree-enabled=true", // always enable the tree based SelectMergeProfiles
 		"-metastore.min-ready-duration=0",
-		fmt.Sprintf("-metastore.address=%s:%d/%s", listenAddr, metastoreLeader.grpcPort, metastoreLeader.nodeName()),
+		"-metastore.address="+metastoreAddress,
 	)
 
 	if comp.Target == "query-frontend" {
@@ -203,11 +202,11 @@ func (c *Cluster) v2PrepareComponent(comp *Component, metastoreLeader *Component
 
 	// register query-backends in the frontend and themselves
 	if comp.Target == "query-frontend" || comp.Target == "query-backend" {
+		addresses := make([]string, 0, len(c.perTarget["query-backend"]))
 		for _, compidx := range c.perTarget["query-backend"] {
-			comp.flags = append(comp.flags,
-				fmt.Sprintf("-query-backend.address=%s:%d", listenAddr, c.Components[compidx].grpcPort),
-			)
+			addresses = append(addresses, fmt.Sprintf("%s:%d", listenAddr, c.Components[compidx].grpcPort))
 		}
+		comp.flags = append(comp.flags, "-query-backend.address="+queryBackendResolverScheme+":///"+strings.Join(addresses, ","))
 	}
 
 	// handle metastore folders and ports
@@ -244,12 +243,12 @@ func (c *Cluster) v2ReadyCheckComponent(ctx context.Context, t *Component) (bool
 	case "metastore":
 		return true, t.metastoreReadyCheck(ctx, c.metastores(), c.metastoreExpectedLeader())
 	case "distributor":
-		return true, t.distributorReadyCheck(ctx, 0, len(c.perTarget["segment-writer"]), len(c.perTarget["distributor"]))
+		return true, t.distributorReadyCheck(ctx, 0, len(c.perTarget["distributor"]), len(c.perTarget["segment-writer"]))
 	}
 	return false, nil
 }
 
-// for the metastore, we need to check that the first replica is the leader, as this is configured statically as the client for other components.
+// The last metastore replica must be the leader, as clients use its static address.
 func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Component, expectedLeader *Component) error {
 	expectedPeers := len(metastores)
 
@@ -260,6 +259,7 @@ func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Co
 	if err != nil {
 		return err
 	}
+	defer cc.Close()
 
 	client := raftnodepb.NewRaftNodeServiceClient(cc)
 
@@ -283,14 +283,14 @@ func (comp *Component) metastoreReadyCheck(ctx context.Context, metastores []*Co
 		return nil
 	}
 
-	// if we are replica 0 we are done as we are already leader
+	// If the expected replica is already leader, no transfer is needed.
 	if comp.replica == expectedPeers-1 {
 		return nil
 	}
 
-	// promote last metastore to new leader
+	// Raft identifies peers by server ID, not by the address/ID endpoint used by clients.
 	_, err = client.PromoteToLeader(ctx, &raftnodepb.PromoteToLeaderRequest{
-		ServerId:    fmt.Sprintf("%s:%d/%s", listenAddr, expectedLeader.raftPort, expectedLeader.nodeName()),
+		ServerId:    expectedLeader.nodeName(),
 		CurrentTerm: nodeInfo.Node.CurrentTerm,
 	})
 	return err
@@ -317,7 +317,7 @@ func (c *Cluster) AddMetastoreWithAutoJoin(ctx context.Context) error {
 	c.Components = append(c.Components, comp)
 	c.perTarget["metastore"] = append(c.perTarget["metastore"], len(c.Components)-1)
 
-	if err := c.v2PrepareComponent(comp, leader); err != nil {
+	if err := c.v2PrepareComponent(comp, fmt.Sprintf("%s:%d/%s", listenAddr, leader.grpcPort, leader.nodeName())); err != nil {
 		return err
 	}
 	comp.flags = append(comp.flags, "-metastore.raft.auto-join=true")

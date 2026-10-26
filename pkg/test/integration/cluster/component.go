@@ -79,6 +79,8 @@ func (comp *Component) httpReadyCheck(ctx context.Context) error {
 		return err
 	}
 
+	defer resp.Body.Close()
+
 	if resp.StatusCode/100 == 2 {
 		return nil
 	}
@@ -92,7 +94,18 @@ func (comp *Component) httpReadyCheck(ctx context.Context) error {
 }
 
 func (comp *Component) Stop() func(context.Context) error {
+	if comp.p == nil {
+		return func(context.Context) error { return nil }
+	}
 	return comp.p.Stop()
+}
+
+// Name is the stable target-replica identifier assigned during Prepare.
+func (comp *Component) Name() string { return comp.nodeName() }
+
+// HTTPURL is the component's loopback HTTP endpoint assigned during Prepare.
+func (comp *Component) HTTPURL() string {
+	return fmt.Sprintf("http://%s:%d", listenAddr, comp.httpPort)
 }
 
 func (comp *Component) String() string {
