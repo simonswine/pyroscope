@@ -48,6 +48,7 @@ const (
 const metadataReadConcurrency = 8
 
 type Config struct {
+	Calibration          bool           `yaml:"calibration" category:"advanced"`
 	JobConcurrency       int            `yaml:"job_capacity" category:"advanced"`
 	JobByteCapacity      int64          `yaml:"job_byte_capacity" category:"advanced"`
 	MemoryMaxRatio       float64        `yaml:"memory_max_ratio" category:"advanced"`
@@ -63,6 +64,7 @@ type Config struct {
 
 func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	const prefix = "compaction-worker."
+	f.BoolVar(&cfg.Calibration, prefix+"calibration", false, "Enable memory calibration: force one concurrent job, sample process heap every 25ms, and force GC before and after compaction. Diagnostic use only.")
 	f.IntVar(&cfg.JobConcurrency, prefix+"job-concurrency", 0, "Number of concurrent jobs compaction worker will run. Defaults to the number of CPU cores.")
 	f.Int64Var(&cfg.JobByteCapacity, prefix+"job-byte-capacity", -1, "Maximum total estimated bytes of compaction jobs running concurrently. -1 disables byte budgeting. When 0, derived from memory-max-ratio of the detected memory limit.")
 	f.Float64Var(&cfg.MemoryMaxRatio, prefix+"memory-max-ratio", defaultMemoryRatio, "Fraction of the detected memory limit (GOMEMLIMIT or cgroup) used as job-byte-capacity when job-byte-capacity is 0.")
@@ -164,6 +166,10 @@ func New(
 	w.threads = config.JobConcurrency
 	if w.threads < 1 {
 		w.threads = runtime.GOMAXPROCS(-1)
+	}
+	if config.Calibration {
+		w.threads = 1
+		level.Warn(logger).Log("msg", "compaction memory calibration enabled; forcing one concurrent job and GC before and after compaction; measurements are process-wide")
 	}
 	w.queue = make(chan *compactionJob, 2*w.threads)
 	w.jobs = make(map[string]*compactionJob, 2*w.threads)
@@ -521,7 +527,13 @@ func (w *Worker) runCompaction(job *compactionJob) {
 	}
 	defer releaseBudget()
 
-	compacted, err := w.compactFn(ctx, job.blocks, w.storage, options...)
+	compacted, err := func() ([]*metastorev1.BlockMeta, error) {
+		if w.config.Calibration {
+			finish := startMemoryCalibration(logger)
+			defer finish()
+		}
+		return w.compactFn(ctx, job.blocks, w.storage, options...)
+	}()
 	defer func() {
 		if err = os.RemoveAll(tempdir); err != nil {
 			level.Warn(logger).Log("msg", "failed to remove compaction directory", "path", tempdir, "err", err)

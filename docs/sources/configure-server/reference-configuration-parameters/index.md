@@ -1415,6 +1415,12 @@ index:
 The `compaction_worker` block configures the compaction-worker (V2).
 
 ```yaml
+# (advanced) Enable memory calibration: force one concurrent job, sample process
+# heap every 25ms, and force GC before and after compaction. Diagnostic use
+# only.
+# CLI flag: -compaction-worker.calibration
+[calibration: <boolean> | default = false]
+
 # (advanced) Number of concurrent jobs compaction worker will run. Defaults to
 # the number of CPU cores.
 # CLI flag: -compaction-worker.job-concurrency

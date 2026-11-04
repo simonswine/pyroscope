@@ -57,6 +57,8 @@ Usage of ./pyroscope:
     	How frequently to scan the bucket, or to refresh the bucket index (if enabled), in order to look for changes (new blocks shipped by ingesters and blocks deleted by retention or compaction). (default 15m0s)
   -blocks-storage.bucket-store.tenant-sync-concurrency int
     	Maximum number of concurrent tenants synching blocks. (default 10)
+  -compaction-worker.calibration
+    	Enable memory calibration: force one concurrent job, sample process heap every 25ms, and force GC before and after compaction. Diagnostic use only.
   -compaction-worker.cleanup-max-duration duration
     	Maximum duration of the cleanup operations. (default 15s)
   -compaction-worker.job-byte-capacity int
