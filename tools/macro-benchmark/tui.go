@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -60,6 +59,7 @@ func runTUI(ctx context.Context) error {
 	fmt.Fprint(tty, "\x1b[?1049h\x1b[?25l")
 	defer fmt.Fprint(tty, "\x1b[?25h\x1b[?1049l")
 
+	var renderer dashboardRenderer
 	selected := 0
 	detailOffset := 0
 	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
@@ -111,7 +111,9 @@ func runTUI(ctx context.Context) error {
 			spin, _ = spin.Update(spin.Tick())
 			lastSpin = time.Now()
 		}
-		_, _ = io.WriteString(tty, tuiDashboard(width, height, root, states, selected, message, cancel != nil, confirm, spin.View(), detailOffset))
+		if err := renderer.render(tty, tuiDashboard(width, height, root, states, selected, message, cancel != nil, confirm, spin.View(), detailOffset), width, height); err != nil {
+			return err
+		}
 		// Darwin's poll reports POLLNVAL for /dev/tty; select works on both
 		// macOS controllers and Linux without a permanently blocked reader.
 		var readable unix.FdSet
@@ -212,6 +214,7 @@ func runTUI(ctx context.Context) error {
 				if len(states) == 0 {
 					continue
 				}
+				renderer.invalidate()
 				if err := interactiveSSH(ctx, tty, previous, states[selected]); err != nil {
 					message = "SSH: " + err.Error()
 				} else {
@@ -233,6 +236,7 @@ func runTUI(ctx context.Context) error {
 					continue
 				}
 				launch := false
+				renderer.invalidate()
 				if err := configureRun(tty, store, machine, &launch); err != nil {
 					message = err.Error()
 				} else if launch {
@@ -272,6 +276,7 @@ func runTUI(ctx context.Context) error {
 					return err
 				}
 				launch := false
+				renderer.invalidate()
 				if err := configureRun(tty, store, state, &launch); err != nil {
 					message = "Draft created; configuration not changed: " + err.Error()
 				} else if launch {
@@ -314,7 +319,10 @@ func runTUI(ctx context.Context) error {
 				case 'e':
 					if state.Phase != "draft" {
 						message = "Only draft sessions can be edited."
-					} else if err := configureRun(tty, store, &state); err != nil {
+					} else if err := func() error {
+						renderer.invalidate()
+						return configureRun(tty, store, &state)
+					}(); err != nil {
 						message = err.Error()
 					} else {
 						message = "Selection saved. p resolves refs and prepares the bundle."
@@ -355,6 +363,7 @@ func runTUI(ctx context.Context) error {
 					}
 					configured.SourceDir = sourceDir
 					configured.Config.Inputs.Benchmarks = strings.Join(names, ",")
+					renderer.invalidate()
 					if err := configureRunForm(tty, nil, &configured, true); err != nil {
 						message = err.Error()
 						break
@@ -867,7 +876,6 @@ func tuiDashboard(width, height int, root string, states []sessionState, selecte
 		lines = append(fit(header, min(2, height-1)), footer[1:]...)
 	}
 	var display strings.Builder
-	display.WriteString("\x1b[H\x1b[2J")
 	// Draw the confirmation over the session view rather than burying the question
 	// in the status line. Keep it usable on narrow terminals too.
 	panelWidth := min(70, max(1, width-1))

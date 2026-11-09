@@ -224,10 +224,16 @@ func sessionHost(ctx context.Context, state *sessionState) (remoteHost, error) {
 	}
 	out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{state.InstanceID}})
 	if err != nil {
+		if awsErrorCode(err, "InvalidInstanceID.NotFound") {
+			return remoteHost{}, errInstanceUnavailable
+		}
 		return remoteHost{}, err
 	}
+	if len(out.Reservations) == 0 || (len(out.Reservations) == 1 && len(out.Reservations[0].Instances) == 0) {
+		return remoteHost{}, errInstanceUnavailable
+	}
 	if len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 {
-		return remoteHost{}, errors.New("instance missing")
+		return remoteHost{}, errors.New("unexpected instance count")
 	}
 	instance := out.Reservations[0].Instances[0]
 	ownerID := state.Config.RunID
@@ -242,6 +248,9 @@ func sessionHost(ctx context.Context, state *sessionState) (remoteHost, error) {
 	}
 	if !ownedResource(instance.Tags, ownerID) {
 		return remoteHost{}, errors.New("instance ownership mismatch")
+	}
+	if instance.State != nil && (instance.State.Name == types.InstanceStateNameTerminated || instance.State.Name == types.InstanceStateNameShuttingDown) {
+		return remoteHost{}, errInstanceUnavailable
 	}
 	address := aws.ToString(instance.PublicIpAddress)
 	if state.Config.PrivateIP {
@@ -420,6 +429,9 @@ func sessionAction(ctx context.Context, store *stateStore, state *sessionState, 
 	if err != nil && !errors.Is(err, context.Canceled) {
 		state.Error = err.Error()
 		if errors.Is(err, errInstanceUnavailable) {
+			if cascadeErr := store.stopUnavailableMachineJobs(state); cascadeErr != nil {
+				err = errors.Join(err, cascadeErr)
+			}
 			switch state.Phase {
 			case "provisioning", "uploading", "ready", "starting", "running", "stopping":
 				state.Phase = "interrupted"

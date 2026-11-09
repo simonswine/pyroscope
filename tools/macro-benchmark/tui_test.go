@@ -66,7 +66,7 @@ func TestTUIDisplay(t *testing.T) {
 	if !strings.Contains(display, "h SSH") || !strings.Contains(display, "No sessions yet") {
 		t.Fatal("missing SSH control or empty state")
 	}
-	if strings.Count(display, "\x1b[2J") != 1 {
+	if strings.Count(display, "\x1b[2J") != 0 {
 		t.Fatal("message injected terminal escape")
 	}
 	if !strings.Contains(tuiDisplay(100, 30, "/state", nil, 0, "", true), "WORKING") {
@@ -173,7 +173,7 @@ func TestTUISelectedSessionTable(t *testing.T) {
 				t.Errorf("%dx%d: missing %q", size.width, size.height, text)
 			}
 		}
-		if strings.Count(view, "\x1b[2J") != 1 {
+		if strings.Count(view, "\x1b[2J") != 0 {
 			t.Fatal("untrusted error injected escape")
 		}
 		if strings.Count(view, "\r\n") > size.height-1 {
