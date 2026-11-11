@@ -27,6 +27,7 @@ import (
 	"github.com/grafana/pyroscope/v2/pkg/block"
 	"github.com/grafana/pyroscope/v2/pkg/block/metadata"
 	"github.com/grafana/pyroscope/v2/pkg/frontend"
+	"github.com/grafana/pyroscope/v2/pkg/frontend/querysession"
 	"github.com/grafana/pyroscope/v2/pkg/frontend/readpath/queryfrontend/diagnostics"
 	"github.com/grafana/pyroscope/v2/pkg/model"
 	"github.com/grafana/pyroscope/v2/pkg/querybackend/queryplan"
@@ -64,7 +65,11 @@ type QueryFrontend struct {
 	// anomalyAPI is nil when unconfigured.
 	anomalyAPI *anomalyapi.Client
 
-	metrics *queryFrontendMetrics
+	metrics          *queryFrontendMetrics
+	metadataWSOnce   sync.Once
+	metadataWS       *querysession.Handler
+	metadataWSErr    error
+	metadataWSConfig querysession.Config
 }
 
 type queryFrontendMetrics struct {
@@ -162,6 +167,7 @@ func NewQueryFrontend(
 		diagnosticsStore:    diagnosticsStore,
 		now:                 time.Now,
 		queryPlanType:       cfg.QueryPlannerStrategy,
+		metadataWSConfig:    cfg.MetadataStreaming,
 		anomalyAPI:          anomalyapi.New(cfg.AnomalyAPI, nil),
 		metrics:             newQueryFrontendMetrics(reg),
 	}

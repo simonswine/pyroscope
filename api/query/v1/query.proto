@@ -35,6 +35,24 @@ message QueryResponse {
 
 service QueryBackendService {
   rpc Invoke(InvokeRequest) returns (InvokeResponse) {}
+  // Accepts exactly one SeriesLabels, LabelNames, or LabelValues query.
+  // Each response has an independent attribute table. Successful EOF completes
+  // the invocation; any stream error invalidates partial results.
+  rpc InvokeStream(InvokeRequest) returns (stream InvokeStreamResponse) {}
+}
+
+message MetadataLabelSet {
+  repeated int64 attribute_refs = 1;
+}
+
+message InvokeStreamResponse {
+  QueryType query_type = 1;
+  AttributeTable attribute_table = 2;
+  repeated MetadataLabelSet series = 3;
+  // LabelNames uses the key of each referenced entry; LabelValues uses the value.
+  repeated int64 attribute_refs = 4;
+  // Diagnostics are delivered once, in a separate final message.
+  Diagnostics diagnostics = 5;
 }
 
 message InvokeOptions {

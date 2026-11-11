@@ -41,6 +41,9 @@ const (
 	// QueryBackendServiceInvokeProcedure is the fully-qualified name of the QueryBackendService's
 	// Invoke RPC.
 	QueryBackendServiceInvokeProcedure = "/query.v1.QueryBackendService/Invoke"
+	// QueryBackendServiceInvokeStreamProcedure is the fully-qualified name of the QueryBackendService's
+	// InvokeStream RPC.
+	QueryBackendServiceInvokeStreamProcedure = "/query.v1.QueryBackendService/InvokeStream"
 )
 
 // QueryFrontendServiceClient is a client for the query.v1.QueryFrontendService service.
@@ -116,6 +119,10 @@ func (UnimplementedQueryFrontendServiceHandler) Query(context.Context, *connect.
 // QueryBackendServiceClient is a client for the query.v1.QueryBackendService service.
 type QueryBackendServiceClient interface {
 	Invoke(context.Context, *connect.Request[v1.InvokeRequest]) (*connect.Response[v1.InvokeResponse], error)
+	// Accepts exactly one SeriesLabels, LabelNames, or LabelValues query.
+	// Each response has an independent attribute table. Successful EOF completes
+	// the invocation; any stream error invalidates partial results.
+	InvokeStream(context.Context, *connect.Request[v1.InvokeRequest]) (*connect.ServerStreamForClient[v1.InvokeStreamResponse], error)
 }
 
 // NewQueryBackendServiceClient constructs a client for the query.v1.QueryBackendService service. By
@@ -135,12 +142,19 @@ func NewQueryBackendServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(queryBackendServiceMethods.ByName("Invoke")),
 			connect.WithClientOptions(opts...),
 		),
+		invokeStream: connect.NewClient[v1.InvokeRequest, v1.InvokeStreamResponse](
+			httpClient,
+			baseURL+QueryBackendServiceInvokeStreamProcedure,
+			connect.WithSchema(queryBackendServiceMethods.ByName("InvokeStream")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // queryBackendServiceClient implements QueryBackendServiceClient.
 type queryBackendServiceClient struct {
-	invoke *connect.Client[v1.InvokeRequest, v1.InvokeResponse]
+	invoke       *connect.Client[v1.InvokeRequest, v1.InvokeResponse]
+	invokeStream *connect.Client[v1.InvokeRequest, v1.InvokeStreamResponse]
 }
 
 // Invoke calls query.v1.QueryBackendService.Invoke.
@@ -148,9 +162,18 @@ func (c *queryBackendServiceClient) Invoke(ctx context.Context, req *connect.Req
 	return c.invoke.CallUnary(ctx, req)
 }
 
+// InvokeStream calls query.v1.QueryBackendService.InvokeStream.
+func (c *queryBackendServiceClient) InvokeStream(ctx context.Context, req *connect.Request[v1.InvokeRequest]) (*connect.ServerStreamForClient[v1.InvokeStreamResponse], error) {
+	return c.invokeStream.CallServerStream(ctx, req)
+}
+
 // QueryBackendServiceHandler is an implementation of the query.v1.QueryBackendService service.
 type QueryBackendServiceHandler interface {
 	Invoke(context.Context, *connect.Request[v1.InvokeRequest]) (*connect.Response[v1.InvokeResponse], error)
+	// Accepts exactly one SeriesLabels, LabelNames, or LabelValues query.
+	// Each response has an independent attribute table. Successful EOF completes
+	// the invocation; any stream error invalidates partial results.
+	InvokeStream(context.Context, *connect.Request[v1.InvokeRequest], *connect.ServerStream[v1.InvokeStreamResponse]) error
 }
 
 // NewQueryBackendServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -166,10 +189,18 @@ func NewQueryBackendServiceHandler(svc QueryBackendServiceHandler, opts ...conne
 		connect.WithSchema(queryBackendServiceMethods.ByName("Invoke")),
 		connect.WithHandlerOptions(opts...),
 	)
+	queryBackendServiceInvokeStreamHandler := connect.NewServerStreamHandler(
+		QueryBackendServiceInvokeStreamProcedure,
+		svc.InvokeStream,
+		connect.WithSchema(queryBackendServiceMethods.ByName("InvokeStream")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/query.v1.QueryBackendService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case QueryBackendServiceInvokeProcedure:
 			queryBackendServiceInvokeHandler.ServeHTTP(w, r)
+		case QueryBackendServiceInvokeStreamProcedure:
+			queryBackendServiceInvokeStreamHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -181,4 +212,8 @@ type UnimplementedQueryBackendServiceHandler struct{}
 
 func (UnimplementedQueryBackendServiceHandler) Invoke(context.Context, *connect.Request[v1.InvokeRequest]) (*connect.Response[v1.InvokeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("query.v1.QueryBackendService.Invoke is not implemented"))
+}
+
+func (UnimplementedQueryBackendServiceHandler) InvokeStream(context.Context, *connect.Request[v1.InvokeRequest], *connect.ServerStream[v1.InvokeStreamResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("query.v1.QueryBackendService.InvokeStream is not implemented"))
 }

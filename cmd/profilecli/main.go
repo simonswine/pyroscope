@@ -70,7 +70,11 @@ func main() {
 	tsdbSeriesCmd := tsdbCmd.Command("series", "dump series in an TSDB index file.")
 	tsdbSeriesFiles := tsdbSeriesCmd.Arg("file", "tsdb file path").Required().ExistingFiles()
 
+	replCmd := app.Command("repl", "Interactively query metadata over a query-session WebSocket.")
+	replParams := addQueryREPLParams(replCmd)
 	queryCmd := app.Command("query", "Query profile store.")
+	queryReplCmd := queryCmd.Command("repl", "Interactively query metadata over a query-session WebSocket.")
+	queryReplParams := addQueryREPLParams(queryReplCmd)
 	queryProfileCmd := queryCmd.Command("profile", "Request merged profile.").Alias("merge")
 	queryProfileOutput := queryProfileCmd.Flag("output", "How to output the result, examples: console, raw, pprof=./my.pprof").Default("console").String()
 	queryProfileForce := queryProfileCmd.Flag("force", "Overwrite the output file if it already exists.").Short('f').Default("false").Bool()
@@ -177,6 +181,14 @@ func main() {
 	}
 
 	switch parsedCmd {
+	case replCmd.FullCommand():
+		if err := queryREPL(ctx, replParams); err != nil {
+			os.Exit(checkError(err))
+		}
+	case queryReplCmd.FullCommand():
+		if err := queryREPL(ctx, queryReplParams); err != nil {
+			os.Exit(checkError(err))
+		}
 	case blocksListCmd.FullCommand():
 		os.Exit(checkError(blocksList(ctx)))
 	case parquetInspectCmd.FullCommand():

@@ -78,6 +78,58 @@ func (m *QueryResponse) CloneMessageVT() proto.Message {
 	return m.CloneVT()
 }
 
+func (m *MetadataLabelSet) CloneVT() *MetadataLabelSet {
+	if m == nil {
+		return (*MetadataLabelSet)(nil)
+	}
+	r := new(MetadataLabelSet)
+	if rhs := m.AttributeRefs; rhs != nil {
+		tmpContainer := make([]int64, len(rhs))
+		copy(tmpContainer, rhs)
+		r.AttributeRefs = tmpContainer
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *MetadataLabelSet) CloneMessageVT() proto.Message {
+	return m.CloneVT()
+}
+
+func (m *InvokeStreamResponse) CloneVT() *InvokeStreamResponse {
+	if m == nil {
+		return (*InvokeStreamResponse)(nil)
+	}
+	r := new(InvokeStreamResponse)
+	r.QueryType = m.QueryType
+	r.AttributeTable = m.AttributeTable.CloneVT()
+	r.Diagnostics = m.Diagnostics.CloneVT()
+	if rhs := m.Series; rhs != nil {
+		tmpContainer := make([]*MetadataLabelSet, len(rhs))
+		for k, v := range rhs {
+			tmpContainer[k] = v.CloneVT()
+		}
+		r.Series = tmpContainer
+	}
+	if rhs := m.AttributeRefs; rhs != nil {
+		tmpContainer := make([]int64, len(rhs))
+		copy(tmpContainer, rhs)
+		r.AttributeRefs = tmpContainer
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *InvokeStreamResponse) CloneMessageVT() proto.Message {
+	return m.CloneVT()
+}
+
 func (m *InvokeOptions) CloneVT() *InvokeOptions {
 	if m == nil {
 		return (*InvokeOptions)(nil)
@@ -1211,6 +1263,82 @@ func (this *QueryResponse) EqualVT(that *QueryResponse) bool {
 
 func (this *QueryResponse) EqualMessageVT(thatMsg proto.Message) bool {
 	that, ok := thatMsg.(*QueryResponse)
+	if !ok {
+		return false
+	}
+	return this.EqualVT(that)
+}
+func (this *MetadataLabelSet) EqualVT(that *MetadataLabelSet) bool {
+	if this == that {
+		return true
+	} else if this == nil || that == nil {
+		return false
+	}
+	if len(this.AttributeRefs) != len(that.AttributeRefs) {
+		return false
+	}
+	for i, vx := range this.AttributeRefs {
+		vy := that.AttributeRefs[i]
+		if vx != vy {
+			return false
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *MetadataLabelSet) EqualMessageVT(thatMsg proto.Message) bool {
+	that, ok := thatMsg.(*MetadataLabelSet)
+	if !ok {
+		return false
+	}
+	return this.EqualVT(that)
+}
+func (this *InvokeStreamResponse) EqualVT(that *InvokeStreamResponse) bool {
+	if this == that {
+		return true
+	} else if this == nil || that == nil {
+		return false
+	}
+	if this.QueryType != that.QueryType {
+		return false
+	}
+	if !this.AttributeTable.EqualVT(that.AttributeTable) {
+		return false
+	}
+	if len(this.Series) != len(that.Series) {
+		return false
+	}
+	for i, vx := range this.Series {
+		vy := that.Series[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &MetadataLabelSet{}
+			}
+			if q == nil {
+				q = &MetadataLabelSet{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if len(this.AttributeRefs) != len(that.AttributeRefs) {
+		return false
+	}
+	for i, vx := range this.AttributeRefs {
+		vy := that.AttributeRefs[i]
+		if vx != vy {
+			return false
+		}
+	}
+	if !this.Diagnostics.EqualVT(that.Diagnostics) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *InvokeStreamResponse) EqualMessageVT(thatMsg proto.Message) bool {
+	that, ok := thatMsg.(*InvokeStreamResponse)
 	if !ok {
 		return false
 	}
@@ -2876,6 +3004,10 @@ var QueryFrontendService_ServiceDesc = grpc.ServiceDesc{
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type QueryBackendServiceClient interface {
 	Invoke(ctx context.Context, in *InvokeRequest, opts ...grpc.CallOption) (*InvokeResponse, error)
+	// Accepts exactly one SeriesLabels, LabelNames, or LabelValues query.
+	// Each response has an independent attribute table. Successful EOF completes
+	// the invocation; any stream error invalidates partial results.
+	InvokeStream(ctx context.Context, in *InvokeRequest, opts ...grpc.CallOption) (QueryBackendService_InvokeStreamClient, error)
 }
 
 type queryBackendServiceClient struct {
@@ -2895,11 +3027,47 @@ func (c *queryBackendServiceClient) Invoke(ctx context.Context, in *InvokeReques
 	return out, nil
 }
 
+func (c *queryBackendServiceClient) InvokeStream(ctx context.Context, in *InvokeRequest, opts ...grpc.CallOption) (QueryBackendService_InvokeStreamClient, error) {
+	stream, err := c.cc.NewStream(ctx, &QueryBackendService_ServiceDesc.Streams[0], "/query.v1.QueryBackendService/InvokeStream", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &queryBackendServiceInvokeStreamClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type QueryBackendService_InvokeStreamClient interface {
+	Recv() (*InvokeStreamResponse, error)
+	grpc.ClientStream
+}
+
+type queryBackendServiceInvokeStreamClient struct {
+	grpc.ClientStream
+}
+
+func (x *queryBackendServiceInvokeStreamClient) Recv() (*InvokeStreamResponse, error) {
+	m := new(InvokeStreamResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // QueryBackendServiceServer is the server API for QueryBackendService service.
 // All implementations must embed UnimplementedQueryBackendServiceServer
 // for forward compatibility
 type QueryBackendServiceServer interface {
 	Invoke(context.Context, *InvokeRequest) (*InvokeResponse, error)
+	// Accepts exactly one SeriesLabels, LabelNames, or LabelValues query.
+	// Each response has an independent attribute table. Successful EOF completes
+	// the invocation; any stream error invalidates partial results.
+	InvokeStream(*InvokeRequest, QueryBackendService_InvokeStreamServer) error
 	mustEmbedUnimplementedQueryBackendServiceServer()
 }
 
@@ -2909,6 +3077,9 @@ type UnimplementedQueryBackendServiceServer struct {
 
 func (UnimplementedQueryBackendServiceServer) Invoke(context.Context, *InvokeRequest) (*InvokeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Invoke not implemented")
+}
+func (UnimplementedQueryBackendServiceServer) InvokeStream(*InvokeRequest, QueryBackendService_InvokeStreamServer) error {
+	return status.Errorf(codes.Unimplemented, "method InvokeStream not implemented")
 }
 func (UnimplementedQueryBackendServiceServer) mustEmbedUnimplementedQueryBackendServiceServer() {}
 
@@ -2941,6 +3112,27 @@ func _QueryBackendService_Invoke_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QueryBackendService_InvokeStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(InvokeRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(QueryBackendServiceServer).InvokeStream(m, &queryBackendServiceInvokeStreamServer{stream})
+}
+
+type QueryBackendService_InvokeStreamServer interface {
+	Send(*InvokeStreamResponse) error
+	grpc.ServerStream
+}
+
+type queryBackendServiceInvokeStreamServer struct {
+	grpc.ServerStream
+}
+
+func (x *queryBackendServiceInvokeStreamServer) Send(m *InvokeStreamResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 // QueryBackendService_ServiceDesc is the grpc.ServiceDesc for QueryBackendService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2953,7 +3145,13 @@ var QueryBackendService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QueryBackendService_Invoke_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "InvokeStream",
+			Handler:       _QueryBackendService_InvokeStream_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "query/v1/query.proto",
 }
 
@@ -3060,6 +3258,151 @@ func (m *QueryResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i--
 			dAtA[i] = 0xa
 		}
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *MetadataLabelSet) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *MetadataLabelSet) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *MetadataLabelSet) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.AttributeRefs) > 0 {
+		var pksize2 int
+		for _, num := range m.AttributeRefs {
+			pksize2 += protohelpers.SizeOfVarint(uint64(num))
+		}
+		i -= pksize2
+		j1 := i
+		for _, num1 := range m.AttributeRefs {
+			num := uint64(num1)
+			for num >= 1<<7 {
+				dAtA[j1] = uint8(uint64(num)&0x7f | 0x80)
+				num >>= 7
+				j1++
+			}
+			dAtA[j1] = uint8(num)
+			j1++
+		}
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(pksize2))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *InvokeStreamResponse) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *InvokeStreamResponse) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *InvokeStreamResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Diagnostics != nil {
+		size, err := m.Diagnostics.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x2a
+	}
+	if len(m.AttributeRefs) > 0 {
+		var pksize2 int
+		for _, num := range m.AttributeRefs {
+			pksize2 += protohelpers.SizeOfVarint(uint64(num))
+		}
+		i -= pksize2
+		j1 := i
+		for _, num1 := range m.AttributeRefs {
+			num := uint64(num1)
+			for num >= 1<<7 {
+				dAtA[j1] = uint8(uint64(num)&0x7f | 0x80)
+				num >>= 7
+				j1++
+			}
+			dAtA[j1] = uint8(num)
+			j1++
+		}
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(pksize2))
+		i--
+		dAtA[i] = 0x22
+	}
+	if len(m.Series) > 0 {
+		for iNdEx := len(m.Series) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.Series[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x1a
+		}
+	}
+	if m.AttributeTable != nil {
+		size, err := m.AttributeTable.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.QueryType != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.QueryType))
+		i--
+		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
@@ -5893,6 +6236,57 @@ func (m *QueryResponse) SizeVT() (n int) {
 	return n
 }
 
+func (m *MetadataLabelSet) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if len(m.AttributeRefs) > 0 {
+		l = 0
+		for _, e := range m.AttributeRefs {
+			l += protohelpers.SizeOfVarint(uint64(e))
+		}
+		n += 1 + protohelpers.SizeOfVarint(uint64(l)) + l
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *InvokeStreamResponse) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.QueryType != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.QueryType))
+	}
+	if m.AttributeTable != nil {
+		l = m.AttributeTable.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if len(m.Series) > 0 {
+		for _, e := range m.Series {
+			l = e.SizeVT()
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	if len(m.AttributeRefs) > 0 {
+		l = 0
+		for _, e := range m.AttributeRefs {
+			l += protohelpers.SizeOfVarint(uint64(e))
+		}
+		n += 1 + protohelpers.SizeOfVarint(uint64(l)) + l
+	}
+	if m.Diagnostics != nil {
+		l = m.Diagnostics.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *InvokeOptions) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -7218,6 +7612,385 @@ func (m *QueryResponse) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Reports = append(m.Reports, &Report{})
 			if err := m.Reports[len(m.Reports)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *MetadataLabelSet) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: MetadataLabelSet: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: MetadataLabelSet: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType == 0 {
+				var v int64
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return protohelpers.ErrIntOverflow
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= int64(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.AttributeRefs = append(m.AttributeRefs, v)
+			} else if wireType == 2 {
+				var packedLen int
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return protohelpers.ErrIntOverflow
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					packedLen |= int(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				if packedLen < 0 {
+					return protohelpers.ErrInvalidLength
+				}
+				postIndex := iNdEx + packedLen
+				if postIndex < 0 {
+					return protohelpers.ErrInvalidLength
+				}
+				if postIndex > l {
+					return io.ErrUnexpectedEOF
+				}
+				var elementCount int
+				var count int
+				for _, integer := range dAtA[iNdEx:postIndex] {
+					if integer < 128 {
+						count++
+					}
+				}
+				elementCount = count
+				if elementCount != 0 && len(m.AttributeRefs) == 0 {
+					m.AttributeRefs = make([]int64, 0, elementCount)
+				}
+				for iNdEx < postIndex {
+					var v int64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return protohelpers.ErrIntOverflow
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						v |= int64(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					m.AttributeRefs = append(m.AttributeRefs, v)
+				}
+			} else {
+				return fmt.Errorf("proto: wrong wireType = %d for field AttributeRefs", wireType)
+			}
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *InvokeStreamResponse) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: InvokeStreamResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: InvokeStreamResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field QueryType", wireType)
+			}
+			m.QueryType = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.QueryType |= QueryType(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AttributeTable", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.AttributeTable == nil {
+				m.AttributeTable = &AttributeTable{}
+			}
+			if err := m.AttributeTable.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Series", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Series = append(m.Series, &MetadataLabelSet{})
+			if err := m.Series[len(m.Series)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 4:
+			if wireType == 0 {
+				var v int64
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return protohelpers.ErrIntOverflow
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= int64(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.AttributeRefs = append(m.AttributeRefs, v)
+			} else if wireType == 2 {
+				var packedLen int
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return protohelpers.ErrIntOverflow
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					packedLen |= int(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				if packedLen < 0 {
+					return protohelpers.ErrInvalidLength
+				}
+				postIndex := iNdEx + packedLen
+				if postIndex < 0 {
+					return protohelpers.ErrInvalidLength
+				}
+				if postIndex > l {
+					return io.ErrUnexpectedEOF
+				}
+				var elementCount int
+				var count int
+				for _, integer := range dAtA[iNdEx:postIndex] {
+					if integer < 128 {
+						count++
+					}
+				}
+				elementCount = count
+				if elementCount != 0 && len(m.AttributeRefs) == 0 {
+					m.AttributeRefs = make([]int64, 0, elementCount)
+				}
+				for iNdEx < postIndex {
+					var v int64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return protohelpers.ErrIntOverflow
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						v |= int64(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					m.AttributeRefs = append(m.AttributeRefs, v)
+				}
+			} else {
+				return fmt.Errorf("proto: wrong wireType = %d for field AttributeRefs", wireType)
+			}
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Diagnostics", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Diagnostics == nil {
+				m.Diagnostics = &Diagnostics{}
+			}
+			if err := m.Diagnostics.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex

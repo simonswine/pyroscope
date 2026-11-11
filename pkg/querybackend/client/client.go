@@ -3,6 +3,7 @@ package querybackendclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -83,6 +84,29 @@ func (b *Client) Invoke(ctx context.Context, req *queryv1.InvokeRequest) (*query
 	return resp, err
 }
 
+// InvokeStream never buffers or retries an already delivered chunk. The server
+// commits the attempt with headers before sending data.
+func (b *Client) InvokeStream(ctx context.Context, req *queryv1.InvokeRequest, visit func(*queryv1.InvokeStreamResponse) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := b.grpcClient.InvokeStream(ctx, req)
+	if err != nil {
+		return err
+	}
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := visit(chunk); err != nil {
+			return err
+		}
+	}
+}
+
 type retryTrackerKey struct{}
 
 type retryTracker struct {
@@ -161,5 +185,8 @@ const grpcServiceConfigTemplate = `{
             ]
         },
         "timeout": "%.0fs"
+    }, {
+        "name": [{"service": "query.v1.QueryBackendService", "method": "InvokeStream"}],
+        "waitForReady": true
     }]
 }`

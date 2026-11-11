@@ -73,7 +73,8 @@ test: go/test ## Run unit tests
 generate: $(BIN)/buf $(BIN)/protoc-gen-go $(BIN)/protoc-gen-go-vtproto $(BIN)/protoc-gen-openapiv2 $(BIN)/protoc-gen-grpc-gateway $(BIN)/protoc-gen-connect-go $(BIN)/protoc-gen-connect-go-mux $(BIN)/gomodifytags $(BIN)/protoc-gen-connect-openapi ## Regenerate protobuf
 	rm -Rf api/openapiv2/gen/ api/gen
 	find pkg/ \( -name \*.pb.go -o -name \*.connect\*.go \) -delete
-	cd api/ && PATH=$(BIN) $(BIN)/buf generate
+	cd api/ && PATH=$(BIN) $(BIN)/buf generate --exclude-path querysession
+	cd api/ && PATH=$(BIN) $(BIN)/buf generate --template buf.gen.querysession.yaml --path querysession
 	cd pkg && PATH=$(BIN) $(BIN)/buf generate
 	PATH="$(BIN):$(PATH)" ./tools/add-parquet-tags.sh
 	go run ./tools/doc-generator/ ./docs/sources/configure-server/reference-configuration-parameters/index.template > docs/sources/configure-server/reference-configuration-parameters/index.md

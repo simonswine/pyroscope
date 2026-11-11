@@ -1,3 +1,5 @@
+# The querysession package uses buf.gen.querysession.yaml (opaque Go API, no VT).
+# Run `make generate`, or exclude querysession when invoking this template.
 version: v1
 managed:
   enabled: true

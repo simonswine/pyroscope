@@ -1,0 +1,16 @@
+# Generate only querysession with this template. No vtprotobuf or RPC stubs:
+# buf generate --template buf.gen.querysession.yaml --path querysession
+version: v1
+managed:
+  enabled: true
+  go_package_prefix:
+    default: github.com/grafana/pyroscope/api/gen/proto/go
+    except:
+      - buf.build/googleapis/googleapis
+      - buf.build/gnostic/gnostic
+plugins:
+  - name: go
+    out: gen/proto/go
+    opt:
+      - paths=source_relative
+      - default_api_level=API_OPAQUE

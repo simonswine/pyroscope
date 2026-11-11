@@ -29,6 +29,7 @@ require (
 	github.com/google/pprof v0.0.0-20260507013755-92041b743c96
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/grafana/alloy/syntax v0.1.0
 	github.com/grafana/dskit v0.0.0-20260616135346-e96eda8260cd
 	github.com/grafana/pyroscope-go v1.2.8

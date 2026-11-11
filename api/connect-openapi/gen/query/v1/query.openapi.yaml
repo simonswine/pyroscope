@@ -45,6 +45,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/query.v1.InvokeResponse'
+  /query.v1.QueryBackendService/InvokeStream: {}
   /query.v1.QueryFrontendService/Query:
     post:
       tags:
@@ -977,6 +978,35 @@ components:
           $ref: '#/components/schemas/query.v1.Diagnostics'
       title: InvokeResponse
       additionalProperties: false
+    query.v1.InvokeStreamResponse:
+      type: object
+      properties:
+        queryType:
+          title: query_type
+          $ref: '#/components/schemas/query.v1.QueryType'
+        attributeTable:
+          title: attribute_table
+          $ref: '#/components/schemas/query.v1.AttributeTable'
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/query.v1.MetadataLabelSet'
+          title: series
+        attributeRefs:
+          type: array
+          items:
+            type:
+              - integer
+              - string
+            format: int64
+          title: attribute_refs
+          description: LabelNames uses the key of each referenced entry; LabelValues uses the value.
+        diagnostics:
+          title: diagnostics
+          description: Diagnostics are delivered once, in a separate final message.
+          $ref: '#/components/schemas/query.v1.Diagnostics'
+      title: InvokeStreamResponse
+      additionalProperties: false
     query.v1.LabelNamesQuery:
       type: object
       title: LabelNamesQuery
@@ -1014,6 +1044,19 @@ components:
             type: string
           title: label_values
       title: LabelValuesReport
+      additionalProperties: false
+    query.v1.MetadataLabelSet:
+      type: object
+      properties:
+        attributeRefs:
+          type: array
+          items:
+            type:
+              - integer
+              - string
+            format: int64
+          title: attribute_refs
+      title: MetadataLabelSet
       additionalProperties: false
     query.v1.Point:
       type: object

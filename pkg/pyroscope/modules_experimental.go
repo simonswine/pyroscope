@@ -3,6 +3,7 @@ package pyroscope
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -128,13 +129,13 @@ func (f *Pyroscope) initQueryFrontendV2() (services.Service, error) {
 
 	f.API.RegisterQuerierServiceHandler(querierHandler)
 	f.API.RegisterPyroscopeHandlers(handler)
+	f.API.RegisterMetadataWebSocket(http.HandlerFunc(f.queryFrontend.MetadataWebSocket))
 	f.API.RegisterVCSServiceHandler(vcsService)
 
-	// New query frontend does not have any state.
-	// For simplicity, we return a no-op service.
+	// WebSockets are hijacked HTTP connections: close them explicitly on shutdown.
 	svc := services.NewIdleService(
 		func(context.Context) error { return nil },
-		func(error) error { return nil },
+		func(error) error { f.queryFrontend.CloseMetadataWebSockets(); return nil },
 	)
 
 	return svc, nil
@@ -182,7 +183,11 @@ func (f *Pyroscope) initQueryFrontendV12() (services.Service, error) {
 	f.API.RegisterFrontendForQuerierHandler(f.frontend)
 	f.API.RegisterQuerierServiceHandler(querierHandler)
 	f.API.RegisterPyroscopeHandlers(wrappedHandler)
+	f.API.RegisterMetadataWebSocket(http.HandlerFunc(f.queryFrontend.MetadataWebSocket))
 	f.API.RegisterVCSServiceHandler(vcsService)
+	f.frontend.AddListener(services.NewListener(nil, nil,
+		func(services.State) { f.queryFrontend.CloseMetadataWebSockets() }, nil,
+		func(services.State, error) { f.queryFrontend.CloseMetadataWebSockets() }))
 
 	return f.frontend, nil
 }

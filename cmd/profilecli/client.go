@@ -72,7 +72,13 @@ type authRoundTripper struct {
 }
 
 func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if c := a.client; c != nil {
+	a.client.setRequestHeaders(req)
+	return a.next.RoundTrip(req)
+}
+
+// setRequestHeaders is shared by HTTP RPCs and WebSocket handshakes.
+func (c *phlareClient) setRequestHeaders(req *http.Request) {
+	if c != nil {
 		if c.TenantID != "" {
 			req.Header.Set("X-Scope-OrgID", c.TenantID)
 		}
@@ -88,7 +94,6 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	addClientCapabilitiesHeader(req, acceptHeaderMimeType, acceptHeaderClientCapabilities)
 	req.Header.Set("User-Agent", userAgentHeader)
-	return a.next.RoundTrip(req)
 }
 
 func (c *phlareClient) httpClient() *http.Client {

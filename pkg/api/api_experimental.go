@@ -25,6 +25,12 @@ func (a *API) RegisterSegmentWriterRing(r http.Handler) {
 	})
 }
 
+// RegisterMetadataWebSocket intentionally omits HTTP gzip middleware: metadata
+// frames negotiate their own uncompressed JSON representation.
+func (a *API) RegisterMetadataWebSocket(handler http.Handler) {
+	a.RegisterRoute("/querier.v1.QuerierService/Session", handler, a.WithAuthMiddleware(), WithMethod("GET"))
+}
+
 func (a *API) RegisterQueryBackend(svc *querybackend.QueryBackend) {
 	queryv1.RegisterQueryBackendServiceServer(a.server.GRPC, svc)
 }

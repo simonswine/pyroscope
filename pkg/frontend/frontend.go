@@ -34,6 +34,7 @@ import (
 	"github.com/grafana/pyroscope/api/gen/proto/go/vcs/v1/vcsv1connect"
 	"github.com/grafana/pyroscope/v2/pkg/anomalyapi"
 	"github.com/grafana/pyroscope/v2/pkg/frontend/frontendpb"
+	"github.com/grafana/pyroscope/v2/pkg/frontend/querysession"
 	"github.com/grafana/pyroscope/v2/pkg/frontend/vcs"
 	objstoreclient "github.com/grafana/pyroscope/v2/pkg/objstore/client"
 	"github.com/grafana/pyroscope/v2/pkg/querier/stats"
@@ -53,7 +54,8 @@ type Config struct {
 	GRPCClientConfig  grpcclient.Config `yaml:"grpc_client_config" doc:"description=Configures the gRPC client used to communicate between the query-frontends and the query-schedulers."`
 
 	// AsyncQueries configures the experimental asynchronous query path.
-	AsyncQueries AsyncQueriesConfig `yaml:"async_queries" category:"experimental" doc:"hidden"`
+	AsyncQueries      AsyncQueriesConfig  `yaml:"async_queries" category:"experimental" doc:"hidden"`
+	MetadataStreaming querysession.Config `yaml:"metadata_streaming" category:"experimental" doc:"hidden"`
 
 	// QueryPlannerStrategy sets the query planner strategy. By default this is
 	// "classic" which provides the legacy query planner behavior.
@@ -117,6 +119,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 	f.BoolVar(&cfg.EnableIPv6, "query-frontend.instance-enable-ipv6", false, "Enable using a IPv6 instance address. (default false)")
 	f.IntVar(&cfg.Port, "query-frontend.instance-port", 0, "Port to advertise to query-scheduler and querier (defaults to -server.http-listen-port).")
 	cfg.AsyncQueries.RegisterFlags(f)
+	cfg.MetadataStreaming.RegisterFlags(f)
 	f.BoolFunc("query-frontend.async-queries-enabled", "Deprecated: Use -query-frontend.async-queries.enabled instead.", func(value string) error {
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -144,6 +147,11 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("unknown query planner strategy: %q", cfg.QueryPlannerStrategy)
 	}
 
+	if cfg.MetadataStreaming != (querysession.Config{}) {
+		if err := cfg.MetadataStreaming.Validate(); err != nil {
+			return err
+		}
+	}
 	return cfg.GRPCClientConfig.Validate()
 }
 
