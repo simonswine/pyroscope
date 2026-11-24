@@ -78,11 +78,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, stop := range c.active {
 			stop()
 		}
-		for _, s := range c.sessions {
-			s.cancel()
-		}
 		c.mu.Unlock()
 		workers.Wait()
+		// No worker can publish another session after this point. Disconnects
+		// discard cursors as well as streams, releasing quota immediately.
+		for _, s := range c.sessions {
+			h.expire(s)
+		}
 		_ = h.charge(tenantID, -c.dictionaryBytes)
 	}()
 	ws.SetReadLimit(64 << 10)
@@ -125,6 +127,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			stop := c.active[req.TargetID]
 			s := c.sessions[req.TargetID]
 			duplicate := c.active[req.ID] != nil
+			if !duplicate {
+				delete(c.sessions, req.TargetID)
+			}
 			c.mu.Unlock()
 			if duplicate {
 				return
@@ -133,7 +138,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				stop()
 			}
 			if s != nil {
-				s.cancel()
+				h.expire(s)
 			}
 			if err = c.write(frame{ID: req.ID, Op: "complete"}); err != nil {
 				return
@@ -180,7 +185,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					c.mu.Lock()
 					c.sessions[req.ID] = cursor.session
+					cancelled := taskCtx.Err() != nil
 					c.mu.Unlock()
+					if cancelled {
+						h.expire(cursor.session)
+					}
 				}
 			case "next":
 				cursor, err = h.lookup(tenantID, req.NextToken)
