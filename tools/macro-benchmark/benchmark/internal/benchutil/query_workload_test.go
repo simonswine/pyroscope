@@ -7,6 +7,45 @@ import (
 	"testing"
 )
 
+func TestSeriesWorkload(t *testing.T) {
+	t.Setenv("PROFILE_TYPE", "process_cpu:cpu:nanoseconds:cpu:nanoseconds")
+	for _, grouped := range []bool{false, true} {
+		seen := map[string]bool{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if r.URL.Path != "/querier.v1.QuerierService/SelectSeries" || body["step"] != float64(15) {
+				t.Errorf("unexpected request: %s %v", r.URL.Path, body)
+			}
+			groups, present := body["groupBy"]
+			if grouped {
+				values, ok := groups.([]any)
+				if !ok || len(values) != 1 || values[0] != "service_name" {
+					t.Errorf("groupBy: %v", groups)
+				}
+			} else if present {
+				t.Errorf("unexpected groupBy: %v", groups)
+			}
+			exemplar, _ := body["exemplarType"].(string)
+			seen[exemplar] = true
+			_, _ = w.Write([]byte(`{"series":[{"points":[{"value":1}]}]}`))
+		}))
+		var groups []string
+		if grouped {
+			groups = []string{"service_name"}
+		}
+		result := testing.Benchmark(func(b *testing.B) {
+			SeriesWorkload(b, Config{URL: server.URL, Tenant: "tenant", Start: "1000", End: "7201000", Selector: `{service_name="test"}`}, groups)
+		})
+		server.Close()
+		if result.N == 0 || !seen["EXEMPLAR_TYPE_NONE"] || !seen["EXEMPLAR_TYPE_INDIVIDUAL"] {
+			t.Errorf("grouped=%v: missing exemplar coverage: %v", grouped, seen)
+		}
+	}
+}
+
 func TestQueryWorkload(t *testing.T) {
 	t.Setenv("PROFILE_TYPE", "process_cpu:cpu:nanoseconds:cpu:nanoseconds")
 	seen := map[string]bool{}

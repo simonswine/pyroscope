@@ -8,8 +8,5 @@ import (
 
 func BenchmarkSeriesByService(b *testing.B) {
 	c := benchutil.FromEnv(b)
-	body := c.ProfileBody(b)
-	body["step"] = 15
-	body["groupBy"] = []string{"service_name"}
-	benchutil.Run(b, c, "SelectSeries", body, "series", 0)
+	benchutil.SeriesWorkload(b, c, []string{"service_name"})
 }

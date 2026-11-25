@@ -8,7 +8,5 @@ import (
 
 func BenchmarkSeriesTotal(b *testing.B) {
 	c := benchutil.FromEnv(b)
-	body := c.ProfileBody(b)
-	body["step"] = 15
-	benchutil.Run(b, c, "SelectSeries", body, "series", 0)
+	benchutil.SeriesWorkload(b, c, nil)
 }

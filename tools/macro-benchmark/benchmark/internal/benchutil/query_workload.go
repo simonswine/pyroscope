@@ -20,6 +20,25 @@ const (
 	FireDevNamespace = "65f0566afcdcf946d39ee9e47ecdd7a0e3a19087f23d1d8193a4c40d6760cb8c"
 )
 
+// SeriesWorkload compares SelectSeries with and without individual exemplars.
+func SeriesWorkload(b *testing.B, c Config, groupBy []string) {
+	b.Helper()
+	for _, test := range []struct{ name, exemplar string }{
+		{"series", "EXEMPLAR_TYPE_NONE"},
+		{"series-with-exemplars", "EXEMPLAR_TYPE_INDIVIDUAL"},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			body := c.ProfileBody(b)
+			body["step"] = 15
+			if len(groupBy) > 0 {
+				body["groupBy"] = groupBy
+			}
+			body["exemplarType"] = test.exemplar
+			Run(b, c, "SelectSeries", body, "series", 0)
+		})
+	}
+}
+
 // QueryWorkload measures the same selection across series and heatmap APIs.
 func QueryWorkload(b *testing.B, c Config) {
 	b.Helper()
