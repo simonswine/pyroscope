@@ -249,7 +249,9 @@ by flushing, settling and an observed quiet compaction window.
 `query-wide` (full tenant) selects `namespace="fire-dev-001"`, grouped by
 `job`. `query-pod` (2h high-volume service) selects the lexicographically first
 pod discovered within the configured selector and replay window, also grouped by
-`job`. Pod discovery runs outside measured requests. Both cases exercise
+`job`. Pod discovery runs outside measured requests. `query-high-volume` queries
+the full high-volume-service dataset over its 2-hour window without a pod filter,
+also grouped by `job`. All three cases exercise
 SelectSeries with and without individual exemplars, and SelectHeatmap for
 individual profiles and spans without exemplars, using a 15-second step. Fixture label
 names and the namespace value use their anonymized mappings.

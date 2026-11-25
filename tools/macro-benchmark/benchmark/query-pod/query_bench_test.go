@@ -1,8 +1,9 @@
 package query_pod
 
 import (
-	"github.com/grafana/pyroscope/macro-benchmark/benchmark/internal/benchutil"
 	"testing"
+
+	"github.com/grafana/pyroscope/macro-benchmark/benchmark/internal/benchutil"
 )
 
 func BenchmarkQueryPod(b *testing.B) {

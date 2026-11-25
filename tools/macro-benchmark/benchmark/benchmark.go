@@ -11,6 +11,7 @@ import (
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-pprof"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-tree"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merged-flamegraph"
+	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/query-high-volume"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/query-pod"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/query-wide"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/series"
