@@ -69,6 +69,7 @@ func runTUI(ctx context.Context) error {
 	var keys tuiKeys
 	var cancel context.CancelFunc
 	var done chan error
+	var operationResult string // read only after receiving done
 	defer func() {
 		if cancel != nil {
 			cancel()
@@ -76,6 +77,7 @@ func runTUI(ctx context.Context) error {
 		}
 	}()
 	start := func(state sessionState, action func(context.Context, *stateStore, *sessionState) error) {
+		operationResult = ""
 		workCtx, stop := context.WithCancel(ctx)
 		cancel = stop
 		done = make(chan error, 1)
@@ -91,6 +93,8 @@ func runTUI(ctx context.Context) error {
 			cancel, done = nil, nil
 			if err != nil && !errors.Is(err, context.Canceled) {
 				message = err.Error()
+			} else if operationResult != "" {
+				message = operationResult
 			} else {
 				message = "Checkpoint saved. Remote resources remain until explicitly destroyed."
 			}
@@ -154,6 +158,14 @@ func runTUI(ctx context.Context) error {
 					continue
 				}
 				switch requested.action {
+				case 'P':
+					start(states[selected], func(ctx context.Context, _ *stateStore, state *sessionState) error {
+						result, err := publishSessionReport(ctx, *state)
+						if err == nil {
+							operationResult = result
+						}
+						return err
+					})
 				case 'd':
 					start(states[selected], destroyMachine)
 				case 'a':
@@ -298,7 +310,7 @@ func runTUI(ctx context.Context) error {
 						selected = i
 					}
 				}
-			case 'e', 'p', 'r', 'R', 's', 'd', 'g', 'a', 'o', 'i':
+			case 'e', 'p', 'P', 'r', 'R', 's', 'd', 'g', 'a', 'o', 'i':
 				if cancel != nil {
 					message = "Detach the active operation with c first."
 					continue
@@ -316,6 +328,12 @@ func runTUI(ctx context.Context) error {
 					continue
 				}
 				switch key {
+				case 'P':
+					var err error
+					confirm, err = publishSessionConfirmation(state)
+					if err != nil {
+						message = err.Error()
+					}
 				case 'e':
 					if state.Phase != "draft" {
 						message = "Only draft sessions can be edited."
@@ -824,7 +842,7 @@ func tuiDashboard(width, height int, root string, states []sessionState, selecte
 			add(" m new machine  ↑/↓ select  c detach  q quit · provision before adding sessions", "")
 		}
 	} else {
-		add(" e edit  p prepare  r resume  R rerun  h SSH  g collect  o report  c detach", "")
+		add(" e edit  p prepare  r resume  R rerun  h SSH  g collect  o report  P publish  c detach", "")
 		add(" m new machine  n new session  ↑/↓ j/k select  s stop  a archive  q quit", "")
 	}
 	add(" EC2 keeps billing after quit/stop. Use d to destroy resources.", amber)

@@ -42,13 +42,15 @@ func run(ctx context.Context, args []string) error {
 		return server.serveAgent(ctx, os.Stdin, os.Stdout)
 	case "worker":
 		return worker(ctx, args[1:])
+	case "publish":
+		return publishCommand(ctx, args[1:], os.Stdout)
 	case "report":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: macro-benchmark report RESULTS.tar.gz OUTPUT.html")
 		}
 		return generateReport(args[1], args[2])
 	case "-h", "--help":
-		fmt.Println("Usage: macro-benchmark [report RESULTS.tar.gz OUTPUT.html]\nInteractive controller. State: $XDG_STATE_HOME/pyroscope-macro-benchmark (default ~/.local/state/pyroscope-macro-benchmark).")
+		fmt.Println("Usage: macro-benchmark [report RESULTS.tar.gz OUTPUT.html | publish [--repo OWNER/REPO] [--name NAME] RUN_DIRECTORY_OR_RESULTS.tar.gz]\nInteractive controller. State: $XDG_STATE_HOME/pyroscope-macro-benchmark (default ~/.local/state/pyroscope-macro-benchmark).")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q; launch macro-benchmark without arguments to open the TUI", args[0])

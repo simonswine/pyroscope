@@ -52,6 +52,7 @@ it and select Save again, or press Esc to cancel.
 | `c` | Cancel/detach the current **local** operation |
 | `g` | Collect the results archive and build both reports |
 | `o` | Open the self-contained local report in your browser (builds it from collected results if missing) |
+| `P` | Publish collected results to `simonswine/pyroscope-macro-benchmark`, after a public-upload confirmation |
 | `h` | Open an interactive SSH shell on the selected instance; `exit` returns to the TUI |
 | `i` | Detect your current public IPv4 and update the owner's SSH `/32` access rule |
 | `s` | Stop the remote worker, after confirmation; keep the instance |
@@ -355,6 +356,46 @@ To generate both reports manually from a collected archive:
 go run . report ~/.local/state/pyroscope-macro-benchmark/results/<session-id>/results.tar.gz index.html
 python3 -m http.server # open http://localhost:8000/
 ```
+
+### Publish a report to GitHub Pages
+
+In the TUI, select a session, collect results with `g`, then press **`P`** and
+confirm with `Y`. The confirmation names the destination and warns about sensitive
+profile data. Publication runs in the background and shows the report URL when done.
+Use the CLI below to choose a different repository or report name.
+
+Authenticate with `gh auth login` (repository write permission is required), then:
+
+```bash
+# Default repository: simonswine/pyroscope-macro-benchmark
+# Default report name: the collected run directory's basename
+go run . publish ~/.local/state/pyroscope-macro-benchmark/results/<session-id>
+
+# Choose another existing Pages repository or a different unique report name
+go run . publish --repo my-org/benchmark-reports --name my-comparison /path/to/results.tar.gz
+```
+
+Flags must precede the input path. Publication generates a fresh web report and
+native profile assets from `results.tar.gz`; it does not upload other files in
+the run directory, the archive, or the offline report. **Reports and profiles can
+contain sensitive labels, symbols, and machine information: review before
+publishing.** Publication is explicit and is never triggered by collection.
+
+The repository must already exist with GitHub Pages configured at the repository
+root. The command preserves its Pages workflow, publishes to the configured source
+branch (or the default branch when no source branch is supplied), adds the report
+under `<name>/index.html`, and updates the root HTML list and README in one commit.
+An existing HTML index must contain a `<ul>` report list; unfamiliar formats are
+rejected rather than overwritten. Existing reports cannot be replaced; use a new
+`--name`. Pushes are never forced; retry if a concurrent update rejects the push.
+
+The command prints the report URL after pushing. Pages deployment is asynchronous
+and can take a few minutes; a successful push does not guarantee deployment success.
+No repositories are created and Pages settings are never changed. Git and the
+GitHub CLI (`gh`) must be installed; Git credentials are obtained through `gh`
+without changing global Git configuration.
+
+### Report contents
 
 The header shows the baseline/comparison refs and commits from `plan.yaml`,
 host details from `cpu.txt` (instance type and provisioned memory reflect the
