@@ -268,8 +268,14 @@ func collectSession(ctx context.Context, store *stateStore, state *sessionState)
 
 func stopSession(ctx context.Context, store *stateStore, state *sessionState) error {
 	if !state.StartRequested {
-		return errors.New("remote worker has not been submitted")
+		// StartRequested is persisted before submitting any remote worker.
+		// Once local work has detached, pre-submission jobs can stop offline.
+		state.Phase = "stopped"
+		state.Error = "cancelled before remote worker submission"
+		return store.save(state)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
 	client, err := store.agentForSession(ctx, state)
 	if err != nil {
 		return err
@@ -315,13 +321,17 @@ func destroySession(ctx context.Context, store *stateStore, state *sessionState)
 	if state.Kind == "rerun" {
 		return errors.New("child destruction is not supported; use s to stop and retain its artifacts; only the owner can destroy AWS")
 	}
-	states, err := store.list()
-	if err != nil {
-		return err
-	}
-	for _, child := range states {
-		if child.Kind == "rerun" && child.StorageRunID == state.Config.RunID && activePhase(child.Phase) {
-			return fmt.Errorf("child %s is active; stop it before destroying the owner", child.Config.RunID)
+	// Machine destruction is explicitly confirmed as terminating all jobs.
+	// Retain the legacy owner guard for callers outside that machine action.
+	if state.Kind != "machine" {
+		states, err := store.list()
+		if err != nil {
+			return err
+		}
+		for _, child := range states {
+			if child.Kind == "rerun" && child.StorageRunID == state.Config.RunID && activePhase(child.Phase) {
+				return fmt.Errorf("child %s is active; destroy the machine instead", child.Config.RunID)
+			}
 		}
 	}
 	state.Phase = "destroying"

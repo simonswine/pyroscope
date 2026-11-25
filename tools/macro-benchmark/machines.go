@@ -203,9 +203,10 @@ func provisionMachine(ctx context.Context, s *stateStore, m *sessionState) error
 	return s.save(m)
 }
 func destroyMachine(ctx context.Context, s *stateStore, m *sessionState) error {
-	if err := s.machineBusy(m.Config.RunID); err != nil {
-		return err
+	if m.Kind != "machine" {
+		return errors.New("select a machine")
 	}
+	// Destruction is the recovery path even when a worker cannot be stopped.
 	if err := destroySession(ctx, s, m); err != nil {
 		return err
 	}

@@ -69,7 +69,8 @@ func runTUI(ctx context.Context) error {
 	var keys tuiKeys
 	var cancel context.CancelFunc
 	var done chan error
-	var operationResult string // read only after receiving done
+	var pending *tuiConfirmation // destructive action queued until local work exits
+	var operationResult string   // read only after receiving done
 	defer func() {
 		if cancel != nil {
 			cancel()
@@ -91,6 +92,21 @@ func runTUI(ctx context.Context) error {
 		case err := <-done:
 			cancel()
 			cancel, done = nil, nil
+			if pending != nil {
+				requested := pending
+				pending = nil
+				// Reload after cancellation so stale worker checkpoints cannot
+				// overwrite the stop/destroy action.
+				state, loadErr := reloadActionState(store, requested.runID)
+				if loadErr != nil {
+					message = loadErr.Error()
+				} else if requested.action == 'd' {
+					start(*state, destroyMachine)
+				} else {
+					start(*state, stopSession)
+				}
+				continue
+			}
 			if err != nil && !errors.Is(err, context.Canceled) {
 				message = err.Error()
 			} else if operationResult != "" {
@@ -155,6 +171,12 @@ func runTUI(ctx context.Context) error {
 				}
 				if len(states) == 0 || states[selected].Config.RunID != requested.runID {
 					message = "Selection changed; try again."
+					continue
+				}
+				if cancel != nil && (requested.action == 's' || requested.action == 'd') {
+					pending = requested
+					cancel()
+					message = "Cancelling local work before stop/destroy."
 					continue
 				}
 				switch requested.action {
@@ -311,7 +333,7 @@ func runTUI(ctx context.Context) error {
 					}
 				}
 			case 'e', 'p', 'P', 'r', 'R', 's', 'd', 'g', 'a', 'o', 'i':
-				if cancel != nil {
+				if cancel != nil && key != 's' && key != 'd' {
 					message = "Detach the active operation with c first."
 					continue
 				}
@@ -441,7 +463,7 @@ func runTUI(ctx context.Context) error {
 					confirm = &tuiConfirmation{action: key, runID: state.Config.RunID, title: "STOP WORKER", detail: "The instance continues billing."}
 					if key == 'd' {
 						confirm.title = "DESTROY INSTANCE"
-						confirm.detail = "Instance and all child rerun storage will be lost. Collect results with g first."
+						confirm.detail = "All active jobs on this machine will be forcibly terminated. Instance and all child storage will be lost. Collect results with g first."
 					}
 				}
 			}
