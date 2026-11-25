@@ -251,7 +251,7 @@ by flushing, settling and an observed quiet compaction window.
 pod discovered within the configured selector and replay window, also grouped by
 `job`. Pod discovery runs outside measured requests. Both cases exercise
 SelectSeries with and without individual exemplars, and SelectHeatmap for
-individual profiles without exemplars, using a 15-second step. Fixture label
+individual profiles and spans without exemplars, using a 15-second step. Fixture label
 names and the namespace value use their anonymized mappings.
 
 Query cases are Go benchmarks in `benchmark/<case-name>/*_bench_test.go`.

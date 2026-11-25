@@ -72,10 +72,15 @@ func TestQueryWorkload(t *testing.T) {
 			t.Errorf("groupBy: %v", body["groupBy"])
 		}
 		exemplar, _ := body["exemplarType"].(string)
-		seen[r.URL.Path+"/"+exemplar] = true
-		if r.URL.Path == "/querier.v1.QuerierService/SelectHeatmap" && body["queryType"] != "HEATMAP_QUERY_TYPE_INDIVIDUAL" {
-			t.Error("wrong heatmap query type")
+		key := r.URL.Path + "/" + exemplar
+		if r.URL.Path == "/querier.v1.QuerierService/SelectHeatmap" {
+			queryType, _ := body["queryType"].(string)
+			if queryType != "HEATMAP_QUERY_TYPE_INDIVIDUAL" && queryType != "HEATMAP_QUERY_TYPE_SPAN" {
+				t.Errorf("wrong heatmap query type: %q", queryType)
+			}
+			key += "/" + queryType
 		}
+		seen[key] = true
 		_, _ = w.Write([]byte(`{"series":[{"points":[{"value":1}]}]}`))
 	}))
 	defer server.Close()
@@ -90,7 +95,8 @@ func TestQueryWorkload(t *testing.T) {
 	for _, key := range []string{
 		"/querier.v1.QuerierService/SelectSeries/EXEMPLAR_TYPE_NONE",
 		"/querier.v1.QuerierService/SelectSeries/EXEMPLAR_TYPE_INDIVIDUAL",
-		"/querier.v1.QuerierService/SelectHeatmap/EXEMPLAR_TYPE_NONE",
+		"/querier.v1.QuerierService/SelectHeatmap/EXEMPLAR_TYPE_NONE/HEATMAP_QUERY_TYPE_INDIVIDUAL",
+		"/querier.v1.QuerierService/SelectHeatmap/EXEMPLAR_TYPE_NONE/HEATMAP_QUERY_TYPE_SPAN",
 	} {
 		if !seen[key] {
 			t.Errorf("missing request %s", key)

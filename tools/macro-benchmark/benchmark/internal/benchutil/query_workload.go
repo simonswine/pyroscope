@@ -42,18 +42,19 @@ func SeriesWorkload(b *testing.B, c Config, groupBy []string) {
 // QueryWorkload measures the same selection across series and heatmap APIs.
 func QueryWorkload(b *testing.B, c Config) {
 	b.Helper()
-	for _, test := range []struct{ name, method, exemplar string }{
-		{"series", "SelectSeries", "EXEMPLAR_TYPE_NONE"},
-		{"series-with-exemplars", "SelectSeries", "EXEMPLAR_TYPE_INDIVIDUAL"},
-		{"heatmap", "SelectHeatmap", "EXEMPLAR_TYPE_NONE"},
+	for _, test := range []struct{ name, method, exemplar, queryType string }{
+		{"series", "SelectSeries", "EXEMPLAR_TYPE_NONE", ""},
+		{"series-with-exemplars", "SelectSeries", "EXEMPLAR_TYPE_INDIVIDUAL", ""},
+		{"heatmap", "SelectHeatmap", "EXEMPLAR_TYPE_NONE", "HEATMAP_QUERY_TYPE_INDIVIDUAL"},
+		{"span-heatmap", "SelectHeatmap", "EXEMPLAR_TYPE_NONE", "HEATMAP_QUERY_TYPE_SPAN"},
 	} {
 		b.Run(test.name, func(b *testing.B) {
 			body := c.ProfileBody(b)
 			body["step"] = 15
 			body["groupBy"] = []string{JobLabel}
 			body["exemplarType"] = test.exemplar
-			if test.method == "SelectHeatmap" {
-				body["queryType"] = "HEATMAP_QUERY_TYPE_INDIVIDUAL"
+			if test.queryType != "" {
+				body["queryType"] = test.queryType
 			}
 			Run(b, c, test.method, body, "series", 0)
 		})
