@@ -41,7 +41,7 @@ func run(ctx context.Context, output, mode, metastore, cpuProfile, memProfile, d
 		}
 	}
 	targets := []string{"distributor", "segment-writer", "segment-writer", "metastore", "metastore", "metastore", "compaction-worker"}
-	opts := []cluster.ClusterOption{cluster.WithV2()}
+	opts := []cluster.ClusterOption{cluster.WithV2(), cluster.WithForceDatasetIndexLookup()}
 	switch mode {
 	case "ingest":
 	case "query":
