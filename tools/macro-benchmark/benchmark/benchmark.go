@@ -7,6 +7,7 @@ import (
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/label-names"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-dot"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-flamegraph"
+	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-pgo"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-pprof"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merge-tree"
 	_ "github.com/grafana/pyroscope/macro-benchmark/benchmark/merged-flamegraph"

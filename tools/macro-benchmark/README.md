@@ -236,7 +236,7 @@ query revisions must be compatible with the preserved ingest/storage format.
 | --- | --- | --- | --- |
 | checkoutservice | 1 hour | 29.88 MB | SelectSeries and merged flamegraph |
 | full-tenant | 3,500 services, 5 minutes | 7.17 GB | LabelNames, LabelValues, Series |
-| high-volume-service | 2 hours | 19.32 GB | Stacktraces: flamegraph, tree, DOT, pprof |
+| high-volume-service | 2 hours | 19.32 GB | Stacktraces: flamegraph, tree, DOT, pprof, Go PGO |
 
 Public GCS URLs are pinned by generation and passed directly to profilecli on
 EC2; no separate fixture download is performed. Catalog size and CRC32C are
@@ -254,6 +254,13 @@ individual profiles without exemplars, using a 15-second step. Fixture label
 names and the namespace value use their anonymized mappings.
 
 Query cases are Go benchmarks in `benchmark/<case-name>/*_bench_test.go`.
+`merge-pgo` measures `SelectMergeStacktraces` with pprof output and
+`stackTraceSelector.goPgo = {keepLocations: 5, aggregateCallees: true}` (the
+profilecli Go PGO defaults). It uses the same high-volume-service dataset,
+selector, time window, `maxNodes: 2048`, warmup, and sequential HTTP harness as
+`merge-pprof` and `merge-tree`, so their latency and response-size metrics can be
+compared. It is included in the default suite; existing saved plans must explicitly
+select it or be recreated to include the new benchmark.
 Each package registers its name and dataset in `register.go` using `init()`.
 Add a blank import to `benchmark/benchmark.go` when adding a package so its
 registration runs in the controller (Go does not auto-discover packages).
