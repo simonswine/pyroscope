@@ -19,5 +19,5 @@ func BenchmarkMergePGO(b *testing.B) {
 			"aggregateCallees": true,
 		},
 	}
-	benchutil.Run(b, c, "SelectMergeStacktraces", body, "pprof", 0)
+	benchutil.Run(b, c, "SelectMergeStacktraces", body, "pprof", 128<<20)
 }
