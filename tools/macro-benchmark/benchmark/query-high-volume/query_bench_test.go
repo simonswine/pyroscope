@@ -7,5 +7,5 @@ import (
 
 func BenchmarkQueryHighVolume(b *testing.B) {
 	c := benchutil.FromEnv(b)
-	benchutil.QueryWorkload(b, c)
+	benchutil.QueryWorkloadAllowEmptySpan(b, c)
 }

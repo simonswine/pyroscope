@@ -42,6 +42,17 @@ func SeriesWorkload(b *testing.B, c Config, groupBy []string) {
 // QueryWorkload measures the same selection across series and heatmap APIs.
 func QueryWorkload(b *testing.B, c Config) {
 	b.Helper()
+	queryWorkload(b, c, false)
+}
+
+// QueryWorkloadAllowEmptySpan also measures span queries on fixtures without span data.
+func QueryWorkloadAllowEmptySpan(b *testing.B, c Config) {
+	b.Helper()
+	queryWorkload(b, c, true)
+}
+
+func queryWorkload(b *testing.B, c Config, allowEmptySpan bool) {
+	b.Helper()
 	for _, test := range []struct{ name, method, exemplar, queryType string }{
 		{"series", "SelectSeries", "EXEMPLAR_TYPE_NONE", ""},
 		{"series-with-exemplars", "SelectSeries", "EXEMPLAR_TYPE_INDIVIDUAL", ""},
@@ -56,7 +67,11 @@ func QueryWorkload(b *testing.B, c Config) {
 			if test.queryType != "" {
 				body["queryType"] = test.queryType
 			}
-			Run(b, c, test.method, body, "series", 0)
+			requiredField := "series"
+			if allowEmptySpan && test.name == "span-heatmap" {
+				requiredField = ""
+			}
+			Run(b, c, test.method, body, requiredField, 0)
 		})
 	}
 }

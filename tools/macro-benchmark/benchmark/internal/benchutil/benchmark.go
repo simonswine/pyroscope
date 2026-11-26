@@ -119,6 +119,13 @@ func validateResponse(body []byte, field string) error {
 	if err := json.Unmarshal(body, &result); err != nil {
 		return err
 	}
+	// An empty field name allows an empty result, but still requires a JSON object.
+	if result == nil {
+		return fmt.Errorf("expected response object")
+	}
+	if field == "" {
+		return nil
+	}
 	switch strings.TrimSpace(string(result[field])) {
 	case "", "null", "[]", "{}", `""`:
 		return fmt.Errorf("empty response field %q", field)
