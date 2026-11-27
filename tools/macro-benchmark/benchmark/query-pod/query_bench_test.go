@@ -9,5 +9,5 @@ import (
 func BenchmarkQueryPod(b *testing.B) {
 	c := benchutil.FromEnv(b)
 	c = benchutil.SinglePod(b, c)
-	benchutil.QueryWorkload(b, c)
+	benchutil.QueryWorkloadAllowEmptySpan(b, c)
 }
