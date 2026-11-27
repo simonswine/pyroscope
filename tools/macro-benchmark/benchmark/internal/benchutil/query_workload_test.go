@@ -75,7 +75,7 @@ func TestQueryWorkload(t *testing.T) {
 		key := r.URL.Path + "/" + exemplar
 		if r.URL.Path == "/querier.v1.QuerierService/SelectHeatmap" {
 			queryType, _ := body["queryType"].(string)
-			if queryType != "HEATMAP_QUERY_TYPE_INDIVIDUAL" && queryType != "HEATMAP_QUERY_TYPE_SPAN" {
+			if queryType != "HEATMAP_QUERY_TYPE_INDIVIDUAL" {
 				t.Errorf("wrong heatmap query type: %q", queryType)
 			}
 			key += "/" + queryType
@@ -96,7 +96,6 @@ func TestQueryWorkload(t *testing.T) {
 		"/querier.v1.QuerierService/SelectSeries/EXEMPLAR_TYPE_NONE",
 		"/querier.v1.QuerierService/SelectSeries/EXEMPLAR_TYPE_INDIVIDUAL",
 		"/querier.v1.QuerierService/SelectHeatmap/EXEMPLAR_TYPE_NONE/HEATMAP_QUERY_TYPE_INDIVIDUAL",
-		"/querier.v1.QuerierService/SelectHeatmap/EXEMPLAR_TYPE_NONE/HEATMAP_QUERY_TYPE_SPAN",
 	} {
 		if !seen[key] {
 			t.Errorf("missing request %s", key)

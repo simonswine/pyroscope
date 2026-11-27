@@ -253,7 +253,7 @@ pod discovered within the configured selector and replay window, also grouped by
 the full high-volume-service dataset over its 2-hour window without a pod filter,
 also grouped by `job`. All three cases exercise
 SelectSeries with and without individual exemplars, and SelectHeatmap for
-individual profiles and spans without exemplars, using a 15-second step. Fixture label
+individual profiles without exemplars, using a 15-second step. Fixture label
 names and the namespace value use their anonymized mappings.
 
 Query cases are Go benchmarks in `benchmark/<case-name>/*_bench_test.go`.
